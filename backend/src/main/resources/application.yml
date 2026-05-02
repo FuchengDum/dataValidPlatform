@@ -1,0 +1,33 @@
+debug: false
+
+server:
+  port: 8080
+
+logging:
+  level:
+    root: INFO
+    org.hibernate.SQL: WARN
+
+spring:
+  profiles:
+    active: h2
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
+app:
+  storage:
+    upload-dir: data/uploads
+    report-dir: data/reports
+  validation:
+    enable-ai-default: false
+    stop-on-rule-error: false
+  datasource-input:
+    jdbc-readonly: true
+    allow-sql-query-input: true
+  ai:
+    enabled: false
+    provider: template
+    endpoint: ""
+    api-key: ""

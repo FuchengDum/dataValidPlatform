@@ -1,0 +1,12 @@
+.ace-tool/
+.DS_Store
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+target/
+
+# Runtime/generated data
+backend/data/

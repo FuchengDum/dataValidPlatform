@@ -1,0 +1,429 @@
+package com.example.datavalidator.service;
+
+import com.example.datavalidator.domain.DataRow;
+import com.example.datavalidator.domain.DataTable;
+import com.example.datavalidator.domain.DatasetSourceType;
+import com.example.datavalidator.domain.RuleCategory;
+import com.example.datavalidator.domain.RuleDefinition;
+import com.example.datavalidator.domain.Severity;
+import com.example.datavalidator.domain.WorkbookDataset;
+import com.example.datavalidator.exception.BadRequestException;
+import com.example.datavalidator.persistence.DataRowSnapshotEntity;
+import com.example.datavalidator.persistence.DataTableSnapshotEntity;
+import com.example.datavalidator.persistence.DatasetEntity;
+import com.example.datavalidator.persistence.RuleDefinitionEntity;
+import com.example.datavalidator.repository.DataRowSnapshotRepository;
+import com.example.datavalidator.repository.DataTableSnapshotRepository;
+import com.example.datavalidator.repository.DatasetRepository;
+import com.example.datavalidator.repository.RuleDefinitionRepository;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.InputStream;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+@Service
+public class ExcelImportService {
+    private static final Map<String, String> BUSINESS_SHEETS = new LinkedHashMap<>();
+    private static final Map<String, String> PRIMARY_KEYS = new HashMap<>();
+
+    static {
+        BUSINESS_SHEETS.put("订单表_t_order", "t_order");
+        BUSINESS_SHEETS.put("订单明细表_t_order_item", "t_order_item");
+        BUSINESS_SHEETS.put("商品表_t_product", "t_product");
+        BUSINESS_SHEETS.put("支付表_t_payment", "t_payment");
+        BUSINESS_SHEETS.put("库存流水表_t_inventory_log", "t_inventory_log");
+        PRIMARY_KEYS.put("t_order", "订单ID");
+        PRIMARY_KEYS.put("t_order_item", "明细ID");
+        PRIMARY_KEYS.put("t_product", "商品ID");
+        PRIMARY_KEYS.put("t_payment", "支付ID");
+        PRIMARY_KEYS.put("t_inventory_log", "流水ID");
+    }
+
+    private final DatasetRepository datasetRepository;
+    private final DataTableSnapshotRepository tableRepository;
+    private final DataRowSnapshotRepository rowRepository;
+    private final RuleDefinitionRepository ruleRepository;
+    private final JsonService jsonService;
+
+    public ExcelImportService(DatasetRepository datasetRepository,
+                              DataTableSnapshotRepository tableRepository,
+                              DataRowSnapshotRepository rowRepository,
+                              RuleDefinitionRepository ruleRepository,
+                              JsonService jsonService) {
+        this.datasetRepository = datasetRepository;
+        this.tableRepository = tableRepository;
+        this.rowRepository = rowRepository;
+        this.ruleRepository = ruleRepository;
+        this.jsonService = jsonService;
+    }
+
+    @Transactional
+    public ImportResult importWorkbook(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("上传文件不能为空");
+        }
+        String fileName = file.getOriginalFilename() == null ? "upload.xlsx" : file.getOriginalFilename();
+        if (!fileName.endsWith(".xlsx")) {
+            throw new BadRequestException("仅支持 .xlsx 文件");
+        }
+
+        try (InputStream inputStream = file.getInputStream(); Workbook workbook = WorkbookFactory.create(inputStream)) {
+            validateSheets(workbook);
+            String datasetId = IdFactory.next("ds");
+            WorkbookDataset dataset = new WorkbookDataset();
+            dataset.setDatasetId(datasetId);
+            dataset.setFileName(fileName);
+            dataset.setSourceName(fileName);
+
+            for (Map.Entry<String, String> entry : BUSINESS_SHEETS.entrySet()) {
+                DataTable table = readBusinessTable(workbook.getSheet(entry.getKey()), entry.getKey(), entry.getValue());
+                dataset.getBusinessTables().put(entry.getValue(), table);
+            }
+
+            Map<String, List<String>> scenarioMap = readScenarioMap(workbook.getSheet("校验场景覆盖矩阵"));
+            List<RuleDefinition> rules = readRules(workbook.getSheet("业务规则库"), scenarioMap);
+            dataset.setRules(rules);
+            saveDataset(dataset);
+
+            return new ImportResult(datasetId, fileName, dataset.getBusinessTables().size(), rules.size(),
+                    countScenarioIds(scenarioMap), 7);
+        } catch (BadRequestException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new BadRequestException("Excel解析失败: " + ex.getMessage());
+        }
+    }
+
+    public WorkbookDataset loadDataset(String datasetId) {
+        DatasetEntity datasetEntity = datasetRepository.findById(datasetId)
+                .orElseThrow(() -> new BadRequestException("数据集不存在: " + datasetId));
+        WorkbookDataset dataset = new WorkbookDataset();
+        dataset.setDatasetId(datasetId);
+        dataset.setSourceType(DatasetSourceType.valueOf(datasetEntity.getSourceType()));
+        dataset.setSourceName(datasetEntity.getSourceName());
+        dataset.setFileName(datasetEntity.getFileName());
+
+        for (DataTableSnapshotEntity tableEntity : tableRepository.findByDatasetId(datasetId)) {
+            DataTable table = new DataTable();
+            table.setSheetName(tableEntity.getSheetName());
+            table.setLogicalName(tableEntity.getLogicalName());
+            table.setSourceType(DatasetSourceType.valueOf(tableEntity.getSourceType()));
+            table.setHeaders(jsonService.readStringList(tableEntity.getHeadersJson()));
+            List<DataRow> rows = rowRepository
+                    .findByDatasetIdAndTableNameOrderByRowIndex(datasetId, tableEntity.getLogicalName())
+                    .stream()
+                    .map(entity -> {
+                        DataRow row = new DataRow();
+                        row.setRowIndex(entity.getRowIndex());
+                        row.setPrimaryKey(entity.getPrimaryKey());
+                        row.setValues(jsonService.readStringMap(entity.getValuesJson()));
+                        return row;
+                    }).collect(Collectors.toList());
+            table.setRows(rows);
+            dataset.getBusinessTables().put(table.getLogicalName(), table);
+        }
+
+        List<RuleDefinition> rules = ruleRepository.findByDatasetIdOrderByRuleId(datasetId)
+                .stream().map(this::toRuleDefinition).collect(Collectors.toList());
+        dataset.setRules(rules);
+        return dataset;
+    }
+
+    private void validateSheets(Workbook workbook) {
+        List<String> required = new ArrayList<>(BUSINESS_SHEETS.keySet());
+        required.addAll(Arrays.asList("业务规则库", "字段约束说明", "关联逻辑说明", "校验场景覆盖矩阵", "使用说明"));
+        for (String sheetName : required) {
+            if (workbook.getSheet(sheetName) == null) {
+                throw new BadRequestException("缺少必需 sheet：" + sheetName);
+            }
+        }
+    }
+
+    private DataTable readBusinessTable(Sheet sheet, String sheetName, String logicalName) {
+        DataFormatter formatter = new DataFormatter();
+        Row headerRow = sheet.getRow(0);
+        if (headerRow == null) {
+            throw new BadRequestException("sheet 表头为空：" + sheetName);
+        }
+        List<String> headers = new ArrayList<>();
+        for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+            String header = formatter.formatCellValue(headerRow.getCell(i)).trim();
+            if (!header.isEmpty()) {
+                headers.add(header);
+            }
+        }
+        String primaryKeyField = PRIMARY_KEYS.get(logicalName);
+        if (!headers.contains(primaryKeyField)) {
+            throw new BadRequestException(sheetName + " 缺少主键字段：" + primaryKeyField);
+        }
+
+        DataTable table = new DataTable();
+        table.setSheetName(sheetName);
+        table.setLogicalName(logicalName);
+        table.setHeaders(headers);
+
+        for (int rowIndex = 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Row excelRow = sheet.getRow(rowIndex);
+            if (excelRow == null) {
+                continue;
+            }
+            Map<String, String> values = new LinkedHashMap<>();
+            boolean hasValue = false;
+            for (int col = 0; col < headers.size(); col++) {
+                String value = formatter.formatCellValue(excelRow.getCell(col)).trim();
+                if (!value.isEmpty()) {
+                    hasValue = true;
+                }
+                values.put(headers.get(col), value);
+            }
+            if (!hasValue) {
+                continue;
+            }
+            DataRow row = new DataRow();
+            row.setRowIndex(rowIndex + 1);
+            row.setValues(values);
+            row.setPrimaryKey(values.get(primaryKeyField));
+            table.getRows().add(row);
+        }
+        return table;
+    }
+
+    private List<RuleDefinition> readRules(Sheet sheet, Map<String, List<String>> scenarioMap) {
+        DataFormatter formatter = new DataFormatter();
+        List<String> headers = readHeaders(sheet, formatter);
+        List<RuleDefinition> rules = new ArrayList<>();
+        for (int rowIndex = 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) {
+                continue;
+            }
+            Map<String, String> values = rowToMap(row, headers, formatter);
+            String ruleId = values.getOrDefault("规则编号", "").trim();
+            if (ruleId.isEmpty()) {
+                continue;
+            }
+            RuleDefinition rule = new RuleDefinition();
+            rule.setRuleId(ruleId);
+            rule.setRuleName(values.getOrDefault("规则名称", ruleId));
+            rule.setCategory(parseCategory(values.get("规则分类")));
+            rule.setApplicableTables(split(values.get("适用表")));
+            rule.setDescription(values.get("规则描述"));
+            rule.setPseudoLogic(values.get("校验逻辑(SQL/伪代码)"));
+            rule.setSeverity("警告".equals(values.get("严重等级")) ? Severity.WARNING : Severity.CRITICAL);
+            rule.setExample(values.get("异常示例"));
+            rule.setScenarioIds(scenarioMap.getOrDefault(ruleId, new ArrayList<>()));
+            rule.setTemplateCode(templateFor(ruleId));
+            rules.add(rule);
+        }
+        return rules;
+    }
+
+    private Map<String, List<String>> readScenarioMap(Sheet sheet) {
+        DataFormatter formatter = new DataFormatter();
+        List<String> headers = readHeaders(sheet, formatter);
+        Map<String, List<String>> result = new HashMap<>();
+        for (int rowIndex = 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) {
+                continue;
+            }
+            Map<String, String> values = rowToMap(row, headers, formatter);
+            String scenarioId = values.getOrDefault("场景编号", "").trim();
+            if (!scenarioId.matches("S\\d{3}")) {
+                continue;
+            }
+            for (String ruleId : split(values.get("覆盖规则"))) {
+                if (!ruleId.matches("R\\d{3}")) {
+                    continue;
+                }
+                result.computeIfAbsent(ruleId, key -> new ArrayList<>()).add(scenarioId);
+            }
+        }
+        return result;
+    }
+
+    private int countScenarioIds(Map<String, List<String>> scenarioMap) {
+        return (int) scenarioMap.values().stream()
+                .flatMap(List::stream)
+                .distinct()
+                .count();
+    }
+
+    private List<String> readHeaders(Sheet sheet, DataFormatter formatter) {
+        Row headerRow = sheet.getRow(0);
+        List<String> headers = new ArrayList<>();
+        for (int i = 0; i < headerRow.getLastCellNum(); i++) {
+            headers.add(formatter.formatCellValue(headerRow.getCell(i)).trim());
+        }
+        return headers;
+    }
+
+    private Map<String, String> rowToMap(Row row, List<String> headers, DataFormatter formatter) {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (int col = 0; col < headers.size(); col++) {
+            values.put(headers.get(col), formatter.formatCellValue(row.getCell(col)).trim());
+        }
+        return values;
+    }
+
+    private void saveDataset(WorkbookDataset dataset) {
+        DatasetEntity datasetEntity = new DatasetEntity();
+        datasetEntity.setDatasetId(dataset.getDatasetId());
+        datasetEntity.setSourceType(dataset.getSourceType().name());
+        datasetEntity.setSourceName(dataset.getSourceName());
+        datasetEntity.setFileName(dataset.getFileName());
+        datasetEntity.setStatus("IMPORTED");
+        datasetEntity.setImportedAt(LocalDateTime.now());
+        datasetRepository.save(datasetEntity);
+
+        for (DataTable table : dataset.getBusinessTables().values()) {
+            DataTableSnapshotEntity tableEntity = new DataTableSnapshotEntity();
+            tableEntity.setId(IdFactory.next("tbl"));
+            tableEntity.setDatasetId(dataset.getDatasetId());
+            tableEntity.setSheetName(table.getSheetName());
+            tableEntity.setLogicalName(table.getLogicalName());
+            tableEntity.setSourceType(table.getSourceType().name());
+            tableEntity.setHeadersJson(jsonService.write(table.getHeaders()));
+            tableEntity.setRowCount(table.getRows().size());
+            tableRepository.save(tableEntity);
+
+            for (DataRow row : table.getRows()) {
+                DataRowSnapshotEntity rowEntity = new DataRowSnapshotEntity();
+                rowEntity.setId(IdFactory.next("row"));
+                rowEntity.setDatasetId(dataset.getDatasetId());
+                rowEntity.setTableName(table.getLogicalName());
+                rowEntity.setRowIndex(row.getRowIndex());
+                rowEntity.setPrimaryKey(row.getPrimaryKey());
+                rowEntity.setValuesJson(jsonService.write(row.getValues()));
+                rowRepository.save(rowEntity);
+            }
+        }
+
+        for (RuleDefinition rule : dataset.getRules()) {
+            RuleDefinitionEntity entity = new RuleDefinitionEntity();
+            entity.setDatasetId(dataset.getDatasetId());
+            entity.setRuleId(rule.getRuleId());
+            entity.setRuleName(rule.getRuleName());
+            entity.setCategory(rule.getCategory().name());
+            entity.setApplicableTables(String.join(",", rule.getApplicableTables()));
+            entity.setDescription(rule.getDescription());
+            entity.setPseudoLogic(rule.getPseudoLogic());
+            entity.setSeverity(rule.getSeverity().name());
+            entity.setExample(rule.getExample());
+            entity.setScenarioIds(String.join(",", rule.getScenarioIds()));
+            entity.setExecutorType(rule.getExecutorType());
+            entity.setTemplateCode(rule.getTemplateCode());
+            ruleRepository.save(entity);
+        }
+    }
+
+    private RuleDefinition toRuleDefinition(RuleDefinitionEntity entity) {
+        RuleDefinition rule = new RuleDefinition();
+        rule.setRuleId(entity.getRuleId());
+        rule.setRuleName(entity.getRuleName());
+        rule.setCategory(RuleCategory.valueOf(entity.getCategory()));
+        rule.setApplicableTables(split(entity.getApplicableTables()));
+        rule.setDescription(entity.getDescription());
+        rule.setPseudoLogic(entity.getPseudoLogic());
+        rule.setSeverity(Severity.valueOf(entity.getSeverity()));
+        rule.setExample(entity.getExample());
+        rule.setScenarioIds(split(entity.getScenarioIds()));
+        rule.setExecutorType(entity.getExecutorType());
+        rule.setTemplateCode(entity.getTemplateCode());
+        return rule;
+    }
+
+    private RuleCategory parseCategory(String category) {
+        if (category == null) {
+            return RuleCategory.SINGLE_BUSINESS_RULE;
+        }
+        if (category.contains("字段约束")) {
+            return RuleCategory.SINGLE_FIELD_CONSTRAINT;
+        }
+        if (category.contains("多表")) {
+            return RuleCategory.MULTI_TABLE_RELATION;
+        }
+        if (category.contains("指标")) {
+            return RuleCategory.METRIC_CONSISTENCY;
+        }
+        return RuleCategory.SINGLE_BUSINESS_RULE;
+    }
+
+    private List<String> split(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return new ArrayList<>();
+        }
+        return Arrays.stream(value.replace("，", ",").replace("、", ",").replace("↔", ",").split(","))
+                .map(String::trim)
+                .filter(item -> !item.isEmpty())
+                .collect(Collectors.toList());
+    }
+
+    private String templateFor(String ruleId) {
+        switch (ruleId) {
+            case "R001":
+            case "R008":
+            case "R013":
+            case "R016":
+                return "NON_NEGATIVE";
+            case "R002":
+                return "NOT_NULL";
+            case "R003":
+                return "NUMERIC_TYPE";
+            case "R011":
+                return "FIELD_EXPRESSION";
+            case "R017":
+            case "R030":
+                return "AGGREGATION_EQUALS";
+            case "R018":
+            case "R023":
+                return "EXISTS_IN_TABLE";
+            case "R024":
+                return "FIELD_EQUALS";
+            case "R029":
+                return "DUPLICATE_CHECK";
+            default:
+                return null;
+        }
+    }
+
+    public static class ImportResult {
+        private final String datasetId;
+        private final String fileName;
+        private final int businessTableCount;
+        private final int ruleCount;
+        private final int scenarioCount;
+        private final int relationCount;
+
+        public ImportResult(String datasetId, String fileName, int businessTableCount, int ruleCount,
+                            int scenarioCount, int relationCount) {
+            this.datasetId = datasetId;
+            this.fileName = fileName;
+            this.businessTableCount = businessTableCount;
+            this.ruleCount = ruleCount;
+            this.scenarioCount = scenarioCount;
+            this.relationCount = relationCount;
+        }
+
+        public String getDatasetId() { return datasetId; }
+        public String getFileName() { return fileName; }
+        public int getBusinessTableCount() { return businessTableCount; }
+        public int getRuleCount() { return ruleCount; }
+        public int getScenarioCount() { return scenarioCount; }
+        public int getRelationCount() { return relationCount; }
+    }
+}
