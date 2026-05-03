@@ -161,6 +161,177 @@ R006 金额关系不再作为孤立硬编码规则处理。后续应通过结构
 
 该 DSL 来自规则文本、伪 SQL 和字段元数据。若其他业务表出现类似“应收金额 = 合同金额 - 减免金额，且应收金额不大于合同金额”的规则，AI 只需要输出相同结构、不同字段名的 AST，后端执行器不需要新增业务特例。
 
+### 3.4 赛题 30 条规则的通用抽象
+
+对 R001 到 R030 的重新梳理目标不是把 30 条规则逐条模板化，而是抽取可迁移到其他数据库业务表的规则方法。后续推荐器应优先识别规则属于哪一种通用方法，再生成对应 DSL 参数。
+
+| 通用方法 | 职责 | 可覆盖规则类型 |
+|---|---|---|
+| `FIELD_CHECK` | 单字段或多字段基础约束，包括非空、非负、数值类型、正整数、枚举值等。 | 字段必填、金额下限、库存下限、数量合法性 |
+| `ROW_ASSERT` | 单表逐行断言，支持 `where` 条件和 `assert` 条件，表达字段间计算、状态约束、时间先后、条件分支。 | 金额关系、状态金额关系、库存连续性、时间逻辑 |
+| `RELATION_EXISTS` | 跨表关联存在性，支持单字段或多字段 join、目标过滤条件、反向不存在校验。 | 主外键存在、支付记录存在、库存流水存在 |
+| `JOIN_ASSERT` | 跨表 join 后的字段或表达式一致性断言。 | 用户一致、价格一致、下架商品不应出库 |
+| `AGGREGATE_ASSERT` | 分组聚合后与目标字段或另一组聚合结果比较。 | 明细汇总、支付汇总、指标汇总一致 |
+| `DUPLICATE_ASSERT` | 分组唯一性或次数约束，支持过滤条件和 `count` 比较。 | 重复支付、唯一组合、最多/至少 N 次 |
+
+该分层可以覆盖当前赛题规则，也能迁移到客户、合同、账单、资金、物流、库存等其他业务库。AI 推荐时不应直接猜“字段类型模板”，而应先判断规则是否表达了业务关系；只要规则包含字段间计算、状态过滤、跨表 join、聚合或重复语义，就应选择对应的关系型 DSL。
+
+### 3.5 30 条规则映射清单
+
+| 规则 | 通用方法 | 推荐 DSL / 模板方向 | 通用化说明 |
+|---|---|---|---|
+| R001 | `FIELD_CHECK.NON_NEGATIVE` | `table=t_order`, `fields=[订单金额,实付金额,优惠金额]` | 任意金额字段非负约束。 |
+| R002 | `FIELD_CHECK.NOT_NULL` | `table=t_order`, `fields=[用户ID,订单状态,下单时间,收货地址]` | 任意业务必填字段。 |
+| R003 | `FIELD_CHECK.NUMERIC_TYPE` | `table=t_order`, `fields=[订单金额,实付金额]` | 数据库强类型后主要用于字符串型源、导入源或元数据校验。 |
+| R004 | `ROW_ASSERT` | `assert 优惠金额 <= 订单金额 * 0.5` | 通用比例上限规则。 |
+| R005 | `ROW_ASSERT` | `where 订单状态 == 已支付`, `assert 订单金额 != 0` | 状态驱动的字段值约束。 |
+| R006 | `ROW_ASSERT` | `assert 实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额` | 通用字段间金额关系。 |
+| R007 | `ROW_ASSERT` | `where 上架状态 == 上架`, `assert 售价 >= 成本价` | 状态过滤后的字段大小关系。 |
+| R008 | `FIELD_CHECK.NON_NEGATIVE` | `table=t_product`, `fields=[库存数量]` | 任意数量/库存非负。 |
+| R009 | `ROW_ASSERT` | `where 上架状态 == 上架`, `assert 库存数量 > 0` | 状态过滤后的正数约束。 |
+| R010 | `ROW_ASSERT` | `where 上架状态 == 上架`, `assert 成本价 != 0 && 售价 != 0` | 状态过滤后的零值约束。 |
+| R011 | `ROW_ASSERT` | `assert 小计金额 == 单价 * 数量`, `tolerance=0.01` | 通用乘法计算关系。 |
+| R012 | `FIELD_CHECK.POSITIVE_INTEGER` | `field=数量`, `assert 数量 > 0 && 数量 == floor(数量)` | 强类型数据库下可退化为正数校验。 |
+| R013 | `FIELD_CHECK.NON_NEGATIVE` | `table=t_payment`, `fields=[支付金额,退款金额]` | 支付类金额非负。 |
+| R014 | `ROW_ASSERT` | `where 支付状态 == 支付成功`, `assert 支付金额 != 0` | 状态驱动的零值约束。 |
+| R015 | `ROW_ASSERT` | `assert 变动后库存 == 变动前库存 + if(变动类型==入库, 变动数量, 0-变动数量)` | 条件分支计算关系。 |
+| R016 | `ROW_ASSERT` | `where 变动类型 in [入库,出库]`, `assert 变动数量 > 0` | 枚举状态下的正数约束。 |
+| R017 | `AGGREGATE_ASSERT` | `sum(t_order_item.小计金额) by 订单ID == t_order.订单金额` | 明细到主表汇总一致。 |
+| R018 | `RELATION_EXISTS` | `t_order_item.商品ID exists in t_product.商品ID` | 外键/引用存在性。 |
+| R019 | `JOIN_ASSERT` | join 商品ID 后 `t_order_item.单价 == t_product.售价`, `tolerance=0.01` | 跨表字段一致或近似一致。 |
+| R020 | `AGGREGATE_ASSERT` | `sum(t_payment.支付金额) by 订单ID == t_order.实付金额` | 支付流水汇总到订单。 |
+| R021 | `RELATION_EXISTS` / `ANTI_EXISTS` | 已支付类订单必须存在支付成功记录；已取消订单不应存在未退款支付成功记录。 | 条件存在性与反存在性。 |
+| R022 | `RELATION_EXISTS` | 已支付订单明细必须存在匹配 `订单ID + 商品ID + 数量` 的出库记录。 | 复合 key 与条件存在性。 |
+| R023 | `RELATION_EXISTS` | `t_payment.订单ID exists in t_order.订单ID` | 反向引用存在性。 |
+| R024 | `JOIN_ASSERT` | join 订单ID 后 `t_payment.用户ID == t_order.用户ID` | 跨表主体一致。 |
+| R025 | `ROW_ASSERT` | 待支付无支付时间；已支付类订单 `支付时间 >= 下单时间`。 | 状态驱动的时间逻辑。 |
+| R026 | `JOIN_ASSERT` / `ANTI_EXISTS` | 已取消订单不应存在 `退款金额=0 && 支付状态=支付成功` 的支付记录。 | 条件 join 后反向违规记录。 |
+| R027 | `FIELD_CHECK.NON_NEGATIVE` | `table=t_inventory_log`, `fields=[变动后库存]` | 结果库存非负。 |
+| R028 | `JOIN_ASSERT` / `ANTI_EXISTS` | join 商品ID 后 `上架状态=已下架 && 变动类型=出库` 不应存在。 | 跨表条件禁用组合。 |
+| R029 | `DUPLICATE_ASSERT` | `where 支付状态 == 支付成功`, `groupBy=[订单ID]`, `count <= 1` | 条件分组次数约束。 |
+| R030 | `AGGREGATE_ASSERT` | 按日期分别汇总订单金额和明细小计金额后比较。 | 指标层多表聚合一致。 |
+
+### 3.6 后续统一 DSL 方向
+
+现有模板可以继续保留，但长期应向统一 DSL 收敛。推荐结果不直接依赖业务规则编号，而是输出以下几类结构化断言。
+
+字段级约束：
+
+```json
+{
+  "type": "FIELD_CHECK",
+  "table": "t_order",
+  "checks": [
+    { "field": "订单金额", "op": ">=", "value": 0 },
+    { "field": "实付金额", "op": ">=", "value": 0 }
+  ]
+}
+```
+
+单表行断言：
+
+```json
+{
+  "type": "ROW_ASSERT",
+  "table": "t_order",
+  "where": {
+    "left": { "field": "订单状态" },
+    "op": "==",
+    "right": { "value": "已支付" }
+  },
+  "assert": {
+    "left": { "field": "订单金额" },
+    "op": "!=",
+    "right": { "value": 0 }
+  }
+}
+```
+
+条件分支行断言：
+
+```json
+{
+  "type": "ROW_ASSERT",
+  "table": "t_inventory_log",
+  "assert": {
+    "left": { "field": "变动后库存" },
+    "op": "==",
+    "right": {
+      "op": "+",
+      "left": { "field": "变动前库存" },
+      "right": {
+        "if": {
+          "left": { "field": "变动类型" },
+          "op": "==",
+          "right": { "value": "入库" }
+        },
+        "then": { "field": "变动数量" },
+        "else": {
+          "op": "-",
+          "left": { "value": 0 },
+          "right": { "field": "变动数量" }
+        }
+      }
+    }
+  }
+}
+```
+
+跨表关联断言：
+
+```json
+{
+  "type": "JOIN_ASSERT",
+  "source": "t_payment",
+  "target": "t_order",
+  "join": [
+    { "sourceField": "订单ID", "targetField": "订单ID" }
+  ],
+  "assert": {
+    "left": { "sourceField": "用户ID" },
+    "op": "==",
+    "right": { "targetField": "用户ID" }
+  }
+}
+```
+
+聚合断言：
+
+```json
+{
+  "type": "AGGREGATE_ASSERT",
+  "source": "t_order_item",
+  "target": "t_order",
+  "groupBy": [
+    { "sourceField": "订单ID", "targetField": "订单ID" }
+  ],
+  "aggregate": { "fn": "SUM", "field": "小计金额" },
+  "assert": {
+    "op": "==",
+    "targetField": "订单金额",
+    "tolerance": 0.01
+  }
+}
+```
+
+重复次数断言：
+
+```json
+{
+  "type": "DUPLICATE_ASSERT",
+  "table": "t_payment",
+  "where": {
+    "left": { "field": "支付状态" },
+    "op": "==",
+    "right": { "value": "支付成功" }
+  },
+  "groupBy": ["订单ID"],
+  "assert": { "count": "<= 1" }
+}
+```
+
+第一阶段可以将这些 DSL 映射到当前已有模板和 `ROW_EXPRESSION`。第二阶段再新增统一执行器，让 `ROW_ASSERT`、`JOIN_ASSERT`、`AGGREGATE_ASSERT`、`DUPLICATE_ASSERT` 成为一等模板，逐步替代分散模板。
+
 ## 4. AI 推荐范围扩展
 
 ### 4.1 模板白名单
@@ -334,13 +505,15 @@ DUPLICATE_CHECK
 
 1. 语义映射器覆盖字段非空、非负、数值类型、行表达式、跨表存在、跨表字段一致、聚合一致、重复检查。
 2. R006 通过通用金额关系映射生成完整 `ROW_EXPRESSION`。
-3. H2 seed 表能通过 `BusinessTableDataProvider` 读取为 `DataTable`，主键、表头、行数和字段值与业务表一致。
-4. Excel 缺少业务 sheet 时仍可导入规则资产，且新导入数据集不写业务行 JSON 快照。
-5. AI 返回合法 `ROW_EXPRESSION`、`EXISTS_IN_TABLE`、`FIELD_EQUALS`、`AGGREGATION_EQUALS`、`DUPLICATE_CHECK` 推荐时，返回 `generatedByAi=true`。
-6. AI 返回不存在表名、字段名、key、非法 AST 或不可执行表达式时，降级本地推荐并带 warning。
-7. 绑定接口拒绝不可执行模板参数，并接受合法 `ROW_EXPRESSION`。
-8. 各模板异常详情展示符合新口径。
-9. `FIELD_EXPRESSION` 和 `ROW_EXPRESSION` 多条件只返回第一条失败条件。
+3. R015 通过通用条件分支行表达式生成完整 `ROW_EXPRESSION`。
+4. 后续新增 30 条规则映射回归测试，确认每条规则都能落到 `FIELD_CHECK`、`ROW_ASSERT`、`RELATION_EXISTS`、`JOIN_ASSERT`、`AGGREGATE_ASSERT` 或 `DUPLICATE_ASSERT`。
+5. H2 seed 表能通过 `BusinessTableDataProvider` 读取为 `DataTable`，主键、表头、行数和字段值与业务表一致。
+6. Excel 缺少业务 sheet 时仍可导入规则资产，且新导入数据集不写业务行 JSON 快照。
+7. AI 返回合法 `ROW_EXPRESSION`、`EXISTS_IN_TABLE`、`FIELD_EQUALS`、`AGGREGATION_EQUALS`、`DUPLICATE_CHECK` 推荐时，返回 `generatedByAi=true`。
+8. AI 返回不存在表名、字段名、key、非法 AST 或不可执行表达式时，降级本地推荐并带 warning。
+9. 绑定接口拒绝不可执行模板参数，并接受合法 `ROW_EXPRESSION`。
+10. 各模板异常详情展示符合新口径。
+11. `FIELD_EXPRESSION` 和 `ROW_EXPRESSION` 多条件只返回第一条失败条件。
 
 ### 9.2 前端验证
 
@@ -363,4 +536,4 @@ DUPLICATE_CHECK
 5. 字段元数据继续使用当前数据集快照中的表头信息。
 6. 规则语义映射第一阶段采用规则化策略和结构化 `ROW_EXPRESSION` AST，不引入用户可编辑的完整规则语言。
 7. 推荐能力优先服务赛题5演示规则，但实现边界应保持通用，不再围绕单个规则编号堆叠特例。
-8. 初版业务表字段类型以字符串保存，规则执行时按需解析数值，减少 H2/MySQL 类型差异。
+8. 业务 seed 表按业务字段类型建表；读取为 `DataTable` 时统一归一化为字符串视图，执行器再按需解析数值、时间和枚举。
