@@ -218,6 +218,12 @@ input {
   word-break: break-word;
 }
 
+.rule-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .mini-button {
   width: 88px;
   height: 28px;
@@ -246,6 +252,21 @@ input {
   border: 1px solid #dbeafe;
   border-radius: 6px;
   background: #f8fbff;
+}
+
+.recommendation-box {
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  background: #f8fbff;
+}
+
+.recommendation-text {
+  margin: 6px 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .assist-box pre {

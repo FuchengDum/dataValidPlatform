@@ -118,6 +118,65 @@ class RuleBindingServiceTest {
                 .hasMessageContaining("字段不存在");
     }
 
+    @Test
+    void updateBindingAcceptsAggregationTemplateWithCrossTableFields() {
+        RuleDefinitionEntity rule = rule("ds-1", "C002", "聚合金额一致");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C002", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C002")).thenReturn(Optional.empty());
+        when(bindingRepository.save(any(RuleBindingEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "order_item", "订单ID", "小计金额"),
+                table("ds-1", "order", "订单ID", "订单金额")));
+        RuleBindingService.BindingRequest request = request("AGGREGATION_EQUALS")
+                .param("source", "order_item")
+                .param("target", "order")
+                .param("groupBy", "订单ID")
+                .param("sum", "小计金额")
+                .param("targetField", "订单金额")
+                .build();
+
+        RuleBindingService.BindingView saved = service.updateBinding("ds-1", "C002", request);
+
+        assertThat(saved.getExecutorType()).isEqualTo("TEMPLATE");
+        assertThat(saved.getTemplateCode()).isEqualTo("AGGREGATION_EQUALS");
+    }
+
+    @Test
+    void updateBindingRejectsCrossTableTemplateWithUnknownField() {
+        RuleDefinitionEntity rule = rule("ds-1", "C003", "存在性校验");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C003", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C003")).thenReturn(Optional.empty());
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "order_item", "订单ID", "商品ID"),
+                table("ds-1", "product", "商品ID")));
+        RuleBindingService.BindingRequest request = request("EXISTS_IN_TABLE")
+                .param("source", "order_item")
+                .param("target", "product")
+                .param("key", "不存在字段")
+                .build();
+
+        assertThatThrownBy(() -> service.updateBinding("ds-1", "C003", request))
+                .isInstanceOf(com.example.datavalidator.exception.BadRequestException.class)
+                .hasMessageContaining("字段不存在");
+    }
+
+    @Test
+    void updateBindingRejectsExpressionTemplateWithUnknownField() {
+        RuleDefinitionEntity rule = rule("ds-1", "C004", "表达式校验");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C004", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C004")).thenReturn(Optional.empty());
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "order_item", "单价", "数量", "小计金额")));
+        RuleBindingService.BindingRequest request = request("FIELD_EXPRESSION")
+                .param("tableName", "order_item")
+                .param("expression", "小计金额 == 单价 * 不存在字段")
+                .build();
+
+        assertThatThrownBy(() -> service.updateBinding("ds-1", "C004", request))
+                .isInstanceOf(com.example.datavalidator.exception.BadRequestException.class)
+                .hasMessageContaining("字段不存在");
+    }
+
     private RuleDefinitionEntity rule(String datasetId, String ruleId, String ruleName) {
         RuleDefinitionEntity entity = new RuleDefinitionEntity();
         entity.setDatasetId(datasetId);
@@ -152,6 +211,10 @@ class RuleBindingServiceTest {
         return request;
     }
 
+    private RequestBuilder request(String templateCode) {
+        return new RequestBuilder(templateCode);
+    }
+
     private DataTableSnapshotEntity table(String datasetId, String logicalName, String... headers) {
         DataTableSnapshotEntity entity = new DataTableSnapshotEntity();
         entity.setId("table-" + logicalName);
@@ -160,5 +223,25 @@ class RuleBindingServiceTest {
         entity.setSourceType("EXCEL");
         entity.setHeadersJson(new JsonService(new ObjectMapper()).write(Arrays.asList(headers)));
         return entity;
+    }
+
+    private static class RequestBuilder {
+        private final RuleBindingService.BindingRequest request = new RuleBindingService.BindingRequest();
+        private final Map<String, Object> params = new LinkedHashMap<>();
+
+        RequestBuilder(String templateCode) {
+            request.setExecutorType("TEMPLATE");
+            request.setTemplateCode(templateCode);
+        }
+
+        RequestBuilder param(String key, Object value) {
+            params.put(key, value);
+            return this;
+        }
+
+        RuleBindingService.BindingRequest build() {
+            request.setTemplateParams(params);
+            return request;
+        }
     }
 }

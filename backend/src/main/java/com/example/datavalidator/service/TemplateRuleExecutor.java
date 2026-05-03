@@ -2,19 +2,21 @@ package com.example.datavalidator.service;
 
 import com.example.datavalidator.domain.DataRow;
 import com.example.datavalidator.domain.DataTable;
-import com.example.datavalidator.domain.Evidence;
 import com.example.datavalidator.domain.RuleBinding;
 import com.example.datavalidator.domain.RuleDefinition;
-import com.example.datavalidator.domain.Severity;
 import com.example.datavalidator.domain.ValidationFinding;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
+
+import static com.example.datavalidator.service.TemplateFindingFactory.finding;
 
 @Service
 public class TemplateRuleExecutor {
@@ -22,24 +24,33 @@ public class TemplateRuleExecutor {
         if (binding == null || !binding.isEnabled() || !"TEMPLATE".equals(binding.getExecutorType())) {
             return Collections.emptyList();
         }
-        DataTable table = tables.get(asString(binding.getTemplateParams().get("tableName")));
-        if (table == null) {
-            return Collections.emptyList();
-        }
-        List<String> fields = fields(binding.getTemplateParams().get("fields"));
+        Map<String, Object> params = binding.getTemplateParams();
         switch (binding.getTemplateCode()) {
             case "NOT_NULL":
-                return notNull(rule, table, fields);
+                return notNull(rule, table(tables, params), fields(params.get("fields")));
             case "NON_NEGATIVE":
-                return nonNegative(rule, table, fields);
+                return nonNegative(rule, table(tables, params), fields(params.get("fields")));
             case "NUMERIC_TYPE":
-                return numericType(rule, table, fields);
+                return numericType(rule, table(tables, params), fields(params.get("fields")));
+            case "FIELD_EXPRESSION":
+                return fieldExpression(rule, table(tables, params), asString(params.get("expression")));
+            case "EXISTS_IN_TABLE":
+                return existsInTable(rule, tables, params);
+            case "FIELD_EQUALS":
+                return fieldEquals(rule, tables, params);
+            case "AGGREGATION_EQUALS":
+                return aggregationEquals(rule, tables, params);
+            case "DUPLICATE_CHECK":
+                return duplicateCheck(rule, table(tables, params), fields(params.get("groupBy")));
             default:
                 return Collections.emptyList();
         }
     }
 
     private List<ValidationFinding> notNull(RuleDefinition rule, DataTable table, List<String> fields) {
+        if (table == null) {
+            return Collections.emptyList();
+        }
         List<ValidationFinding> findings = new ArrayList<>();
         for (DataRow row : table.getRows()) {
             for (String field : fields) {
@@ -53,6 +64,9 @@ public class TemplateRuleExecutor {
     }
 
     private List<ValidationFinding> nonNegative(RuleDefinition rule, DataTable table, List<String> fields) {
+        if (table == null) {
+            return Collections.emptyList();
+        }
         List<ValidationFinding> findings = new ArrayList<>();
         for (DataRow row : table.getRows()) {
             for (String field : fields) {
@@ -67,6 +81,9 @@ public class TemplateRuleExecutor {
     }
 
     private List<ValidationFinding> numericType(RuleDefinition rule, DataTable table, List<String> fields) {
+        if (table == null) {
+            return Collections.emptyList();
+        }
         List<ValidationFinding> findings = new ArrayList<>();
         for (DataRow row : table.getRows()) {
             for (String field : fields) {
@@ -80,35 +97,169 @@ public class TemplateRuleExecutor {
         return findings;
     }
 
-    private ValidationFinding finding(RuleDefinition rule, DataTable table, DataRow row, String field,
-                                      String actual, String expected, String description, String evidenceType) {
-        ValidationFinding finding = new ValidationFinding();
-        finding.setFindingId(IdFactory.next("f"));
-        finding.setRuleId(rule.getRuleId());
-        finding.setRuleName(rule.getRuleName());
-        finding.setRuleCategory(rule.getCategory());
-        finding.setSeverity(rule.getSeverity());
-        finding.setTableName(table.getLogicalName());
-        finding.setRecordKey(row.getPrimaryKey());
-        finding.setFieldName(field);
-        finding.setActualValue(actual);
-        finding.setExpectedValue(expected);
-        finding.setDescription(description);
-        finding.setScenarioIds(rule.getScenarioIds());
-        finding.setReason(row.getPrimaryKey() + " 命中规则 " + rule.getRuleId() + "：" + description + "。");
-        finding.setImpact(rule.getSeverity() == Severity.CRITICAL ? "可能影响业务数据准确性。" : "建议人工复核，避免后续统计口径偏差。");
-        finding.setSuggestion("请核查 " + table.getLogicalName() + " 表记录 " + row.getPrimaryKey()
-                + " 的字段 " + field + "，参考期望值修正或回溯上游数据逻辑。");
-        Evidence evidence = new Evidence();
-        evidence.setEvidenceType(evidenceType);
-        evidence.setTableName(table.getLogicalName());
-        evidence.setRecordKey(row.getPrimaryKey());
-        evidence.setFieldName(field);
-        evidence.setActualValue(actual);
-        evidence.setExpectedValue(expected);
-        evidence.setCalculation(description);
-        finding.getEvidences().add(evidence);
-        return finding;
+    private List<ValidationFinding> fieldExpression(RuleDefinition rule, DataTable table, String expression) {
+        if (table == null || ValueParsers.isBlank(expression)) {
+            return Collections.emptyList();
+        }
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (DataRow row : table.getRows()) {
+            Optional<TemplateExpressionEvaluator.Result> result =
+                    TemplateExpressionEvaluator.evaluate(expression, row);
+            if (result.isPresent() && !result.get().isSatisfied()) {
+                findings.add(finding(rule, table, row, result.get().getLeftField(),
+                        row.value(result.get().getLeftField()), result.get().getExpectedExpression(),
+                        expression + " 不成立", "CALCULATION"));
+            }
+        }
+        return findings;
+    }
+
+    private List<ValidationFinding> existsInTable(RuleDefinition rule, Map<String, DataTable> tables,
+                                                  Map<String, Object> params) {
+        DataTable source = tables.get(asString(params.get("source")));
+        DataTable target = tables.get(asString(params.get("target")));
+        String key = asString(params.get("key"));
+        if (source == null || target == null || ValueParsers.isBlank(key)) {
+            return Collections.emptyList();
+        }
+        List<String> targetKeys = target.getRows().stream()
+                .map(row -> row.value(key))
+                .filter(value -> !ValueParsers.isBlank(value))
+                .collect(Collectors.toList());
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (DataRow row : source.getRows()) {
+            String actual = row.value(key);
+            if (!ValueParsers.isBlank(actual) && !targetKeys.contains(actual)) {
+                findings.add(finding(rule, source, row, key, actual,
+                        target.getLogicalName() + "." + key,
+                        key + " 必须存在于 " + target.getLogicalName(), "RELATION"));
+            }
+        }
+        return findings;
+    }
+
+    private List<ValidationFinding> fieldEquals(RuleDefinition rule, Map<String, DataTable> tables,
+                                                Map<String, Object> params) {
+        DataTable source = tables.get(asString(params.get("source")));
+        DataTable target = tables.get(asString(params.get("target")));
+        String key = asString(params.get("key"));
+        String sourceField = asString(params.get("sourceField"));
+        String targetField = asString(params.get("targetField"));
+        if (source == null || target == null || ValueParsers.isBlank(key)
+                || ValueParsers.isBlank(sourceField) || ValueParsers.isBlank(targetField)) {
+            return Collections.emptyList();
+        }
+        Map<String, DataRow> targetRows = indexBy(target, key);
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (DataRow row : source.getRows()) {
+            DataRow targetRow = targetRows.get(row.value(key));
+            String actual = row.value(sourceField);
+            if (targetRow == null) {
+                findings.add(finding(rule, source, row, key, row.value(key),
+                        target.getLogicalName() + "." + key,
+                        key + " 未找到关联记录", "RELATION"));
+                continue;
+            }
+            String expected = targetRow.value(targetField);
+            if (!actual.equals(expected)) {
+                findings.add(finding(rule, source, row, sourceField, actual, expected,
+                        sourceField + " 必须等于 " + target.getLogicalName() + "." + targetField, "RELATION"));
+            }
+        }
+        return findings;
+    }
+
+    private List<ValidationFinding> aggregationEquals(RuleDefinition rule, Map<String, DataTable> tables,
+                                                      Map<String, Object> params) {
+        DataTable source = tables.get(asString(params.get("source")));
+        DataTable target = tables.get(asString(params.get("target")));
+        String groupBy = asString(params.get("groupBy"));
+        String sumField = asString(params.get("sum"));
+        String targetField = asString(params.get("targetField"));
+        String targetKey = asString(params.get("targetKey"));
+        if (ValueParsers.isBlank(targetKey)) {
+            targetKey = groupBy;
+        }
+        if (source == null || target == null || ValueParsers.isBlank(groupBy)
+                || ValueParsers.isBlank(sumField) || ValueParsers.isBlank(targetField)) {
+            return Collections.emptyList();
+        }
+        Map<String, BigDecimal> totals = new HashMap<>();
+        Map<String, DataRow> sourceRowsByGroup = new HashMap<>();
+        for (DataRow row : source.getRows()) {
+            Optional<BigDecimal> value = ValueParsers.decimal(row.value(sumField));
+            if (value.isPresent()) {
+                String groupValue = row.value(groupBy);
+                totals.merge(groupValue, value.get(), BigDecimal::add);
+                sourceRowsByGroup.putIfAbsent(groupValue, row);
+            }
+        }
+        List<ValidationFinding> findings = new ArrayList<>();
+        List<String> matchedGroups = new ArrayList<>();
+        for (DataRow row : target.getRows()) {
+            String groupValue = row.value(targetKey);
+            BigDecimal expected = totals.get(groupValue);
+            Optional<BigDecimal> actual = ValueParsers.decimal(row.value(targetField));
+            if (expected != null && (!actual.isPresent() || actual.get().compareTo(expected) != 0)) {
+                findings.add(finding(rule, target, row, targetField, row.value(targetField),
+                        formatDecimal(expected),
+                        targetField + " 必须等于 " + source.getLogicalName() + "." + sumField + " 汇总值",
+                        "CALCULATION"));
+            }
+            if (expected != null) {
+                matchedGroups.add(groupValue);
+            }
+        }
+        for (Map.Entry<String, BigDecimal> entry : totals.entrySet()) {
+            if (!matchedGroups.contains(entry.getKey())) {
+                DataRow sourceRow = sourceRowsByGroup.get(entry.getKey());
+                findings.add(finding(rule, source, sourceRow, groupBy, entry.getKey(),
+                        target.getLogicalName() + "." + targetKey,
+                        groupBy + " 未找到聚合目标记录", "RELATION"));
+            }
+        }
+        return findings;
+    }
+
+    private List<ValidationFinding> duplicateCheck(RuleDefinition rule, DataTable table, List<String> groupBy) {
+        if (table == null || groupBy.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Map<String, List<DataRow>> groups = new HashMap<>();
+        for (DataRow row : table.getRows()) {
+            groups.computeIfAbsent(groupKey(row, groupBy), ignored -> new ArrayList<>()).add(row);
+        }
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (List<DataRow> rows : groups.values()) {
+            if (rows.size() > 1) {
+                for (DataRow row : rows) {
+                    findings.add(finding(rule, table, row, groupBy.get(0),
+                            groupBy.stream().map(row::value).collect(Collectors.joining(", ")),
+                            "唯一组合", "存在重复记录", "DUPLICATE"));
+                }
+            }
+        }
+        return findings;
+    }
+
+    private DataTable table(Map<String, DataTable> tables, Map<String, Object> params) {
+        return tables.get(asString(params.get("tableName")));
+    }
+
+    private Map<String, DataRow> indexBy(DataTable table, String key) {
+        Map<String, DataRow> index = new HashMap<>();
+        for (DataRow row : table.getRows()) {
+            index.putIfAbsent(row.value(key), row);
+        }
+        return index;
+    }
+
+    private String groupKey(DataRow row, List<String> fields) {
+        return fields.stream().map(row::value).collect(Collectors.joining("\u001F"));
+    }
+
+    private String formatDecimal(BigDecimal value) {
+        return value.stripTrailingZeros().toPlainString();
     }
 
     private String asString(Object value) {
@@ -124,6 +275,11 @@ public class TemplateRuleExecutor {
             }
             return result;
         }
+        String single = asString(value);
+        if (!ValueParsers.isBlank(single)) {
+            return Collections.singletonList(single);
+        }
         return Collections.emptyList();
     }
+
 }

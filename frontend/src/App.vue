@@ -89,12 +89,42 @@
               <span v-if="rule.templateCode" class="template-code">{{ rule.templateCode }}</span>
             </div>
             <p v-if="rule.templateParamSummary" class="param-summary">{{ rule.templateParamSummary }}</p>
-            <button
-              class="mini-button"
-              :disabled="!rule.templateCode || loading"
-              @click="switchRuleBinding(rule)">
-              {{ rule.executorType === 'TEMPLATE' ? '切回内置' : '切到模板' }}
-            </button>
+            <div class="rule-actions">
+              <button
+                class="mini-button"
+                :disabled="!rule.templateCode || loading"
+                @click="switchRuleBinding(rule)">
+                {{ rule.executorType === 'TEMPLATE' ? '切回内置' : '切到模板' }}
+              </button>
+              <button
+                class="mini-button"
+                :disabled="!dataset || loading"
+                @click="loadRuleRecommendation(rule)">
+                AI 推荐
+              </button>
+            </div>
+            <section v-if="recommendations[rule.ruleId]" class="recommendation-box">
+              <div class="rule-binding">
+                <span class="tag template">{{ recommendations[rule.ruleId].templateCode }}</span>
+                <span class="template-code">
+                  {{ recommendations[rule.ruleId].source }} · {{ recommendations[rule.ruleId].generatedByAi ? '模型生成' : '本地推荐' }}
+                </span>
+              </div>
+              <p class="param-summary">{{ summarizeParams(recommendations[rule.ruleId].templateParams) }}</p>
+              <p class="recommendation-text">{{ recommendations[rule.ruleId].explanation }}</p>
+              <p
+                v-for="warning in recommendations[rule.ruleId].warnings"
+                :key="warning"
+                class="assist-warning">
+                {{ warning }}
+              </p>
+              <button
+                class="mini-button wide"
+                :disabled="loading"
+                @click="applyRuleRecommendation(rule)">
+                应用推荐
+              </button>
+            </section>
           </div>
         </div>
       </aside>
@@ -198,6 +228,7 @@ import {
   fetchFindings,
   fetchRules,
   fetchSummary,
+  recommendRuleBinding,
   reportDownloadUrl,
   startValidation,
   updateRuleBinding,
@@ -212,6 +243,7 @@ const rules = ref([])
 const detail = ref(null)
 const aiAnalysis = ref(null)
 const sqlDraft = ref(null)
+const recommendations = reactive({})
 const message = ref('')
 const error = ref('')
 const loading = ref(false)
@@ -247,6 +279,7 @@ async function onFileChange(event) {
     summary.value = null
     findings.value = []
     detail.value = null
+    clearRecommendations()
     rules.value = await fetchRules(result.datasetId)
   }
 }
@@ -297,6 +330,28 @@ async function switchRuleBinding(rule) {
   }
 }
 
+async function loadRuleRecommendation(rule) {
+  if (!dataset.value) return
+  const result = await run(() => recommendRuleBinding(dataset.value.datasetId, rule.ruleId), '规则模板推荐已生成')
+  if (result) {
+    recommendations[rule.ruleId] = result
+  }
+}
+
+async function applyRuleRecommendation(rule) {
+  if (!dataset.value || !recommendations[rule.ruleId]) return
+  const recommendation = recommendations[rule.ruleId]
+  const result = await run(() => updateRuleBinding(dataset.value.datasetId, rule.ruleId, {
+    executorType: 'TEMPLATE',
+    templateCode: recommendation.templateCode,
+    templateParams: recommendation.templateParams || {}
+  }), '已应用规则模板推荐')
+  if (result) {
+    delete recommendations[rule.ruleId]
+    rules.value = await fetchRules(dataset.value.datasetId)
+  }
+}
+
 async function loadAiAnalysis() {
   if (!detail.value) return
   const result = await run(() => analyzeFinding(detail.value.finding.findingId), 'AI 分析已生成')
@@ -339,5 +394,15 @@ function labelExecutor(executorType) {
 
 function labelDraftType(draftType) {
   return draftType === 'MANUAL_REVIEW' ? '人工核查 SQL 草案' : '只读校验 SQL 草案'
+}
+
+function summarizeParams(params = {}) {
+  return Object.entries(params)
+    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join('/') : value}`)
+    .join(', ')
+}
+
+function clearRecommendations() {
+  Object.keys(recommendations).forEach((key) => delete recommendations[key])
 }
 </script>

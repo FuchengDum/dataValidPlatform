@@ -57,6 +57,14 @@ export async function draftValidationSql(request) {
   }))
 }
 
+export async function recommendRuleBinding(datasetId, ruleId) {
+  return parseResponse(await fetch(`${API_BASE}/api/ai/rule-binding/recommend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ datasetId, ruleId })
+  }))
+}
+
 export async function fetchRules(datasetId) {
   return parseResponse(await fetch(`${API_BASE}/api/rules?datasetId=${encodeURIComponent(datasetId)}`))
 }

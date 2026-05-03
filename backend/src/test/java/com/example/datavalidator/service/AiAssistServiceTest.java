@@ -1,15 +1,23 @@
 package com.example.datavalidator.service;
 
 import com.example.datavalidator.persistence.FindingEvidenceEntity;
+import com.example.datavalidator.persistence.DataTableSnapshotEntity;
+import com.example.datavalidator.persistence.RuleDefinitionEntity;
 import com.example.datavalidator.persistence.ValidationFindingEntity;
+import com.example.datavalidator.repository.DataTableSnapshotRepository;
+import com.example.datavalidator.repository.RuleDefinitionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AiAssistServiceTest {
     private final AiAssistService service = serviceWith(Optional.empty());
@@ -117,6 +125,83 @@ class AiAssistServiceTest {
                 .hasMessageContaining("只允许生成只读 SELECT");
     }
 
+    @Test
+    void recommendRuleBindingUsesValidModelRecommendation() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"NOT_NULL\","
+                + "\"templateParams\":{\"tableName\":\"t_order\",\"fields\":[\"用户ID\",\"订单状态\"]},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐必填字段\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R002"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
+        assertThat(result.getConfidence()).isEqualTo("HIGH");
+        assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
+        assertThat(result.getTemplateParams().get("fields")).asList().containsExactly("用户ID", "订单状态");
+        assertThat(result.isRequiresHumanReview()).isTrue();
+    }
+
+    @Test
+    void recommendRuleBindingFallsBackWhenModelUsesUnknownField() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"NOT_NULL\","
+                + "\"templateParams\":{\"tableName\":\"t_order\",\"fields\":[\"不存在字段\"]},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R002"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
+        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+    }
+
+    @Test
+    void recommendRuleBindingFallsBackWhenModelUsesUnsupportedTemplate() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EQUALS\","
+                + "\"templateParams\":{\"source\":\"t_order\",\"target\":\"t_payment\"},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐跨表一致\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R002"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
+        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+    }
+
+    @Test
+    void recommendRuleBindingUsesLocalRecommendationWhenModelUnavailable() {
+        AiAssistService service = recommendationService(Optional.empty());
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R002"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
+        assertThat(result.getConfidence()).isEqualTo("MEDIUM");
+        assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
+        assertThat(result.getTemplateParams().get("fields")).asList().contains("用户ID", "订单状态");
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingRejectsUnknownRule() {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        AiAssistService service = new AiAssistService((systemPrompt, userPrompt) -> Optional.empty(),
+                new ObjectMapper(), ruleRepository, tableRepository);
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("missing", "ds-1"))).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.recommendRuleBinding(recommendationRequest("ds-1", "missing")))
+                .isInstanceOf(com.example.datavalidator.exception.BadRequestException.class)
+                .hasMessageContaining("规则不存在");
+    }
+
     private ValidationFindingEntity finding() {
         ValidationFindingEntity finding = new ValidationFindingEntity();
         finding.setFindingId("f001");
@@ -144,5 +229,55 @@ class AiAssistServiceTest {
 
     private AiAssistService serviceWith(Optional<String> modelResponse) {
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse, new ObjectMapper());
+    }
+
+    private AiAssistService recommendationService(Optional<String> modelResponse) {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        RuleDefinitionEntity rule = rule("ds-1", "R002", "订单必填字段", "NOT_NULL");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("R002", "ds-1"))).thenReturn(Optional.of(rule));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "下单时间", "收货地址")));
+        return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
+                new ObjectMapper(), ruleRepository, tableRepository);
+    }
+
+    private AiAssistService.RuleBindingRecommendationRequest recommendationRequest(String datasetId, String ruleId) {
+        AiAssistService.RuleBindingRecommendationRequest request = new AiAssistService.RuleBindingRecommendationRequest();
+        request.setDatasetId(datasetId);
+        request.setRuleId(ruleId);
+        return request;
+    }
+
+    private RuleDefinitionEntity rule(String datasetId, String ruleId, String ruleName, String templateCode) {
+        RuleDefinitionEntity entity = new RuleDefinitionEntity();
+        entity.setDatasetId(datasetId);
+        entity.setRuleId(ruleId);
+        entity.setRuleName(ruleName);
+        entity.setCategory("SINGLE_FIELD_CONSTRAINT");
+        entity.setSeverity("CRITICAL");
+        entity.setApplicableTables("t_order");
+        entity.setDescription("用户ID、订单状态、下单时间、收货地址不能为空");
+        entity.setPseudoLogic("用户ID IS NOT NULL AND 订单状态 IS NOT NULL");
+        entity.setTemplateCode(templateCode);
+        return entity;
+    }
+
+    private DataTableSnapshotEntity table(String datasetId, String logicalName, String... headers) {
+        DataTableSnapshotEntity entity = new DataTableSnapshotEntity();
+        entity.setId("tbl-" + logicalName);
+        entity.setDatasetId(datasetId);
+        entity.setLogicalName(logicalName);
+        entity.setSourceType("EXCEL");
+        entity.setHeadersJson(writeJson(Arrays.asList(headers)));
+        return entity;
+    }
+
+    private String writeJson(List<String> values) {
+        try {
+            return new ObjectMapper().writeValueAsString(values);
+        } catch (Exception ex) {
+            throw new IllegalStateException(ex);
+        }
     }
 }

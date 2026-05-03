@@ -44,4 +44,10 @@ public class AiAssistController {
             @RequestBody AiAssistService.SqlDraftRequest request) {
         return ApiResponse.ok(aiAssistService.draftValidationSql(request));
     }
+
+    @PostMapping("/rule-binding/recommend")
+    public ApiResponse<AiAssistService.RuleBindingRecommendationResult> recommendRuleBinding(
+            @RequestBody AiAssistService.RuleBindingRecommendationRequest request) {
+        return ApiResponse.ok(aiAssistService.recommendRuleBinding(request));
+    }
 }

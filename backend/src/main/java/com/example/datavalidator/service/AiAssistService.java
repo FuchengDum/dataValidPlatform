@@ -1,14 +1,20 @@
 package com.example.datavalidator.service;
 
 import com.example.datavalidator.exception.BadRequestException;
+import com.example.datavalidator.persistence.DataTableSnapshotEntity;
 import com.example.datavalidator.persistence.FindingEvidenceEntity;
+import com.example.datavalidator.persistence.RuleDefinitionEntity;
 import com.example.datavalidator.persistence.ValidationFindingEntity;
+import com.example.datavalidator.repository.DataTableSnapshotRepository;
+import com.example.datavalidator.repository.RuleDefinitionRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -29,13 +35,27 @@ public class AiAssistService {
     private static final Pattern SQL_COMMENT_PATTERN = Pattern.compile("(?s)(--|/\\*|\\*/)");
     private static final String SOURCE_LOCAL = "LOCAL_RULE_BASED";
     private static final String SOURCE_AI = "OPENAI_COMPATIBLE";
+    private static final List<String> SUPPORTED_RECOMMENDATION_TEMPLATES = Arrays.asList(
+            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE");
 
     private final AiChatClient aiChatClient;
     private final ObjectMapper objectMapper;
+    private final RuleDefinitionRepository ruleRepository;
+    private final DataTableSnapshotRepository tableRepository;
 
-    public AiAssistService(AiChatClient aiChatClient, ObjectMapper objectMapper) {
+    @Autowired
+    public AiAssistService(AiChatClient aiChatClient,
+                           ObjectMapper objectMapper,
+                           RuleDefinitionRepository ruleRepository,
+                           DataTableSnapshotRepository tableRepository) {
         this.aiChatClient = aiChatClient;
         this.objectMapper = objectMapper;
+        this.ruleRepository = ruleRepository;
+        this.tableRepository = tableRepository;
+    }
+
+    public AiAssistService(AiChatClient aiChatClient, ObjectMapper objectMapper) {
+        this(aiChatClient, objectMapper, null, null);
     }
 
     public AnalysisResult analyzeFinding(ValidationFindingEntity finding, List<FindingEvidenceEntity> evidences) {
@@ -70,6 +90,32 @@ public class AiAssistService {
         return local;
     }
 
+    public RuleBindingRecommendationResult recommendRuleBinding(RuleBindingRecommendationRequest request) {
+        if (request == null) {
+            throw new BadRequestException("规则推荐请求不能为空");
+        }
+        requireText(request.getDatasetId(), "datasetId");
+        requireText(request.getRuleId(), "ruleId");
+        requireRecommendationRepositories();
+        RuleDefinitionEntity rule = ruleRepository.findById(
+                        new RuleDefinitionEntity.Key(request.getRuleId(), request.getDatasetId()))
+                .orElseThrow(() -> new BadRequestException("规则不存在: " + request.getRuleId()));
+        Map<String, List<String>> tableFields = loadTableFields(request.getDatasetId());
+        RuleBindingRecommendationResult local = localRecommendation(rule, tableFields);
+        Optional<String> modelResponse = aiChatClient
+                .complete(recommendationSystemPrompt(), recommendationUserPrompt(rule, tableFields));
+        if (modelResponse.isEmpty()) {
+            return local;
+        }
+        Optional<RuleBindingRecommendationResult> generated = modelResponse
+                .flatMap(content -> parseRecommendationResult(content, tableFields));
+        if (generated.isPresent()) {
+            return generated.get();
+        }
+        local.getWarnings().add("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+        return local;
+    }
+
     private AnalysisResult localAnalysis(ValidationFindingEntity finding, List<FindingEvidenceEntity> evidences) {
         AnalysisResult result = new AnalysisResult();
         result.setSource(SOURCE_LOCAL);
@@ -98,6 +144,48 @@ public class AiAssistService {
             result.getWarnings().add("记录主键 " + request.getRecordKey() + " 可作为人工复核线索。");
         }
         return result;
+    }
+
+    private RuleBindingRecommendationResult localRecommendation(RuleDefinitionEntity rule,
+                                                                Map<String, List<String>> tableFields) {
+        RuleBindingRecommendationResult result = new RuleBindingRecommendationResult();
+        result.setSource(SOURCE_LOCAL);
+        result.setGeneratedByAi(false);
+        result.setRequiresHumanReview(true);
+        result.setConfidence("MEDIUM");
+        result.setTemplateCode(resolveLocalTemplateCode(rule));
+        String tableName = firstApplicableTable(rule, tableFields);
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("tableName", tableName);
+        params.put("fields", localFields(rule, tableFields.getOrDefault(tableName, Collections.emptyList())));
+        result.setTemplateParams(params);
+        result.setExplanation("基于规则文本、默认模板编码和数据集字段生成的本地推荐，请人工确认后应用。");
+        return result;
+    }
+
+    private Optional<RuleBindingRecommendationResult> parseRecommendationResult(
+            String content, Map<String, List<String>> tableFields) {
+        try {
+            Map<String, Object> values = objectMapper.readValue(stripCodeFence(content),
+                    new TypeReference<Map<String, Object>>() {});
+            RuleBindingRecommendationResult result = new RuleBindingRecommendationResult();
+            result.setTemplateCode(stringValue(values, "templateCode"));
+            result.setTemplateParams(objectMap(values.get("templateParams")));
+            if (!isValidRecommendation(result, tableFields)) {
+                return Optional.empty();
+            }
+            result.setSource(SOURCE_AI);
+            result.setGeneratedByAi(true);
+            result.setRequiresHumanReview(true);
+            result.setConfidence(normalizeConfidence(stringValue(values, "confidence")));
+            result.setExplanation(stringValue(values, "explanation"));
+            if (isBlank(result.getExplanation())) {
+                result.setExplanation("模型根据规则文本和字段元数据生成的模板绑定建议，请人工确认后应用。");
+            }
+            return Optional.of(result);
+        } catch (Exception ex) {
+            return Optional.empty();
+        }
     }
 
     private Optional<AnalysisResult> parseAnalysisResult(String content) {
@@ -169,6 +257,12 @@ public class AiAssistService {
                 + "不要输出修复 SQL，不要解释。";
     }
 
+    private String recommendationSystemPrompt() {
+        return "你是业务规则模板推荐助手。只允许输出 JSON，字段为 templateCode、templateParams、confidence、explanation。"
+                + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE。"
+                + "templateParams 必须包含 tableName 和 fields，且只能使用用户提供的表名和字段名。";
+    }
+
     private String sqlUserPrompt(SqlDraftRequest request) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("draftType", normalizeDraftType(request.getDraftType()));
@@ -178,6 +272,17 @@ public class AiAssistService {
         payload.put("expectedValue", request.getExpectedValue());
         payload.put("recordKey", request.getRecordKey());
         payload.put("userIntent", request.getUserIntent());
+        return writeJson(payload);
+    }
+
+    private String recommendationUserPrompt(RuleDefinitionEntity rule, Map<String, List<String>> tableFields) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("ruleId", rule.getRuleId());
+        payload.put("ruleName", rule.getRuleName());
+        payload.put("description", rule.getDescription());
+        payload.put("pseudoLogic", rule.getPseudoLogic());
+        payload.put("applicableTables", rule.getApplicableTables());
+        payload.put("availableTables", tableFields);
         return writeJson(payload);
     }
 
@@ -200,6 +305,117 @@ public class AiAssistService {
 
     private String normalizeDraftType(String draftType) {
         return "MANUAL_REVIEW".equals(draftType) ? "MANUAL_REVIEW" : "VALIDATION_CHECK";
+    }
+
+    private String normalizeConfidence(String confidence) {
+        String normalized = confidence == null ? "" : confidence.trim().toUpperCase(Locale.ROOT);
+        if ("HIGH".equals(normalized) || "MEDIUM".equals(normalized) || "LOW".equals(normalized)) {
+            return normalized;
+        }
+        return "MEDIUM";
+    }
+
+    private Map<String, List<String>> loadTableFields(String datasetId) {
+        Map<String, List<String>> tables = new LinkedHashMap<>();
+        for (DataTableSnapshotEntity table : tableRepository.findByDatasetId(datasetId)) {
+            tables.put(table.getLogicalName(), jsonStringList(table.getHeadersJson()));
+        }
+        return tables;
+    }
+
+    private List<String> jsonStringList(String json) {
+        if (isBlank(json)) {
+            return Collections.emptyList();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {});
+        } catch (Exception ex) {
+            return Collections.emptyList();
+        }
+    }
+
+    private String resolveLocalTemplateCode(RuleDefinitionEntity rule) {
+        if (SUPPORTED_RECOMMENDATION_TEMPLATES.contains(rule.getTemplateCode())) {
+            return rule.getTemplateCode();
+        }
+        String text = (safe(rule.getRuleName()) + " " + safe(rule.getDescription()) + " "
+                + safe(rule.getPseudoLogic())).toLowerCase(Locale.ROOT);
+        if (text.contains("非空") || text.contains("not null")) {
+            return "NOT_NULL";
+        }
+        if (text.contains("类型") || text.contains("数值") || text.contains("numeric")) {
+            return "NUMERIC_TYPE";
+        }
+        return "NON_NEGATIVE";
+    }
+
+    private String firstApplicableTable(RuleDefinitionEntity rule, Map<String, List<String>> tableFields) {
+        for (String item : safe(rule.getApplicableTables()).split("[,，/、\\s]+")) {
+            if (tableFields.containsKey(item)) {
+                return item;
+            }
+        }
+        return tableFields.keySet().stream().findFirst().orElse("");
+    }
+
+    private List<String> localFields(RuleDefinitionEntity rule, List<String> headers) {
+        String text = safe(rule.getRuleName()) + " " + safe(rule.getDescription()) + " " + safe(rule.getPseudoLogic());
+        List<String> fields = new ArrayList<>();
+        for (String header : headers) {
+            if (!isBlank(header) && text.contains(header)) {
+                fields.add(header);
+            }
+        }
+        if (fields.isEmpty() && !headers.isEmpty()) {
+            fields.add(headers.get(0));
+        }
+        return fields;
+    }
+
+    private boolean isValidRecommendation(RuleBindingRecommendationResult result, Map<String, List<String>> tableFields) {
+        if (!SUPPORTED_RECOMMENDATION_TEMPLATES.contains(result.getTemplateCode())) {
+            return false;
+        }
+        String tableName = objectString(result.getTemplateParams().get("tableName"));
+        if (!tableFields.containsKey(tableName)) {
+            return false;
+        }
+        List<String> fields = objectStringList(result.getTemplateParams().get("fields"));
+        if (fields.isEmpty()) {
+            return false;
+        }
+        List<String> headers = tableFields.getOrDefault(tableName, Collections.emptyList());
+        return headers.containsAll(fields);
+    }
+
+    private Map<String, Object> objectMap(Object value) {
+        if (!(value instanceof Map)) {
+            return new LinkedHashMap<>();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        ((Map<?, ?>) value).forEach((key, item) -> result.put(String.valueOf(key), item));
+        return result;
+    }
+
+    private List<String> objectStringList(Object value) {
+        if (!(value instanceof List)) {
+            return Collections.emptyList();
+        }
+        List<String> result = new ArrayList<>();
+        for (Object item : (List<?>) value) {
+            result.add(objectString(item));
+        }
+        return result;
+    }
+
+    private String objectString(Object value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private void requireRecommendationRepositories() {
+        if (ruleRepository == null || tableRepository == null) {
+            throw new IllegalStateException("规则推荐依赖未初始化");
+        }
     }
 
     private String stringValue(Map<String, Object> values, String key) {
@@ -347,6 +563,44 @@ public class AiAssistService {
         public void setGeneratedByAi(boolean generatedByAi) { this.generatedByAi = generatedByAi; }
         public String getSource() { return source; }
         public void setSource(String source) { this.source = source; }
+        public List<String> getWarnings() { return warnings; }
+        public void setWarnings(List<String> warnings) { this.warnings = warnings; }
+    }
+
+    public static class RuleBindingRecommendationRequest {
+        private String datasetId;
+        private String ruleId;
+
+        public String getDatasetId() { return datasetId; }
+        public void setDatasetId(String datasetId) { this.datasetId = datasetId; }
+        public String getRuleId() { return ruleId; }
+        public void setRuleId(String ruleId) { this.ruleId = ruleId; }
+    }
+
+    public static class RuleBindingRecommendationResult {
+        private String templateCode;
+        private Map<String, Object> templateParams = new LinkedHashMap<>();
+        private String confidence;
+        private String explanation;
+        private boolean requiresHumanReview = true;
+        private String source;
+        private boolean generatedByAi;
+        private List<String> warnings = new ArrayList<>();
+
+        public String getTemplateCode() { return templateCode; }
+        public void setTemplateCode(String templateCode) { this.templateCode = templateCode; }
+        public Map<String, Object> getTemplateParams() { return templateParams; }
+        public void setTemplateParams(Map<String, Object> templateParams) { this.templateParams = templateParams; }
+        public String getConfidence() { return confidence; }
+        public void setConfidence(String confidence) { this.confidence = confidence; }
+        public String getExplanation() { return explanation; }
+        public void setExplanation(String explanation) { this.explanation = explanation; }
+        public boolean isRequiresHumanReview() { return requiresHumanReview; }
+        public void setRequiresHumanReview(boolean requiresHumanReview) { this.requiresHumanReview = requiresHumanReview; }
+        public String getSource() { return source; }
+        public void setSource(String source) { this.source = source; }
+        public boolean isGeneratedByAi() { return generatedByAi; }
+        public void setGeneratedByAi(boolean generatedByAi) { this.generatedByAi = generatedByAi; }
         public List<String> getWarnings() { return warnings; }
         public void setWarnings(List<String> warnings) { this.warnings = warnings; }
     }

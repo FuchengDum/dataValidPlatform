@@ -1,7 +1,6 @@
 package com.example.datavalidator.service;
 
 import com.example.datavalidator.exception.BadRequestException;
-import com.example.datavalidator.persistence.DataTableSnapshotEntity;
 import com.example.datavalidator.persistence.RuleBindingEntity;
 import com.example.datavalidator.persistence.RuleDefinitionEntity;
 import com.example.datavalidator.repository.DataTableSnapshotRepository;
@@ -12,7 +11,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,7 +20,8 @@ import java.util.stream.Collectors;
 @Service
 public class RuleBindingService {
     private static final List<String> SUPPORTED_TEMPLATE_CODES = Arrays.asList(
-            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE");
+            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION",
+            "EXISTS_IN_TABLE", "FIELD_EQUALS", "AGGREGATION_EQUALS", "DUPLICATE_CHECK");
 
     private final RuleDefinitionRepository ruleRepository;
     private final RuleBindingRepository bindingRepository;
@@ -128,42 +127,7 @@ public class RuleBindingService {
         if (!SUPPORTED_TEMPLATE_CODES.contains(templateCode)) {
             throw new BadRequestException("暂不支持的规则模板: " + templateCode);
         }
-        String tableName = asString(params.get("tableName"));
-        if (isBlank(tableName)) {
-            throw new BadRequestException("模板参数 tableName 不能为空");
-        }
-        DataTableSnapshotEntity table = findTable(datasetId, tableName)
-                .orElseThrow(() -> new BadRequestException("逻辑表不存在: " + tableName));
-        List<String> fields = fields(params.get("fields"));
-        if (fields.isEmpty()) {
-            throw new BadRequestException("模板参数 fields 不能为空");
-        }
-        List<String> headers = jsonService.readStringList(table.getHeadersJson());
-        for (String field : fields) {
-            if (isBlank(field)) {
-                throw new BadRequestException("模板字段不能为空");
-            }
-            if (!headers.contains(field)) {
-                throw new BadRequestException("字段不存在: " + field);
-            }
-        }
-    }
-
-    private Optional<DataTableSnapshotEntity> findTable(String datasetId, String tableName) {
-        return tableRepository.findByDatasetId(datasetId).stream()
-                .filter(table -> tableName.equals(table.getLogicalName()))
-                .findFirst();
-    }
-
-    private List<String> fields(Object value) {
-        if (!(value instanceof List)) {
-            return Collections.emptyList();
-        }
-        List<String> result = new ArrayList<>();
-        for (Object item : (List<?>) value) {
-            result.add(asString(item));
-        }
-        return result;
+        TemplateBindingValidator.validate(templateCode, params, tableRepository.findByDatasetId(datasetId), jsonService);
     }
 
     private String asString(Object value) {

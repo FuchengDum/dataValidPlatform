@@ -69,6 +69,133 @@ class TemplateRuleExecutorTest {
         assertThat(findings.get(0).getExpectedValue()).isEqualTo("数值类型");
     }
 
+    @Test
+    void fieldExpressionTemplateComparesCalculatedFieldValue() {
+        DataTable items = table("order_item", "明细ID",
+                row("I001", "明细ID", "I001", "单价", "10", "数量", "2", "小计金额", "20"),
+                row("I002", "明细ID", "I002", "单价", "8", "数量", "3", "小计金额", "20"));
+        RuleBinding binding = template("T001", "FIELD_EXPRESSION")
+                .param("tableName", "order_item")
+                .param("expression", "小计金额 == 单价 * 数量")
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("T001", "明细金额表达式"), tables(items), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("I002");
+        assertThat(findings.get(0).getFieldName()).isEqualTo("小计金额");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("单价 * 数量");
+    }
+
+    @Test
+    void existsInTableTemplateReportsMissingTargetKey() {
+        DataTable items = table("order_item", "明细ID",
+                row("I001", "明细ID", "I001", "商品ID", "P001"),
+                row("I002", "明细ID", "I002", "商品ID", "P404"));
+        DataTable products = table("product", "商品ID",
+                row("P001", "商品ID", "P001"));
+        RuleBinding binding = template("T002", "EXISTS_IN_TABLE")
+                .param("source", "order_item")
+                .param("target", "product")
+                .param("key", "商品ID")
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("T002", "商品存在性"), tables(items, products), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getTableName()).isEqualTo("order_item");
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("I002");
+        assertThat(findings.get(0).getExpectedValue()).contains("product");
+    }
+
+    @Test
+    void fieldEqualsTemplateComparesRelatedRows() {
+        DataTable payments = table("payment", "支付ID",
+                row("P001", "支付ID", "P001", "订单ID", "O001", "用户ID", "U001"),
+                row("P002", "支付ID", "P002", "订单ID", "O002", "用户ID", "U999"));
+        DataTable orders = table("order", "订单ID",
+                row("O001", "订单ID", "O001", "用户ID", "U001"),
+                row("O002", "订单ID", "O002", "用户ID", "U002"));
+        RuleBinding binding = template("T003", "FIELD_EQUALS")
+                .param("source", "payment")
+                .param("target", "order")
+                .param("key", "订单ID")
+                .param("sourceField", "用户ID")
+                .param("targetField", "用户ID")
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("T003", "用户一致性"), tables(payments, orders), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("P002");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("U999");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("U002");
+    }
+
+    @Test
+    void aggregationEqualsTemplateComparesGroupedSumToTargetField() {
+        DataTable items = table("order_item", "明细ID",
+                row("I001", "明细ID", "I001", "订单ID", "O001", "小计金额", "10"),
+                row("I002", "明细ID", "I002", "订单ID", "O001", "小计金额", "15"),
+                row("I003", "明细ID", "I003", "订单ID", "O002", "小计金额", "8"));
+        DataTable orders = table("order", "订单ID",
+                row("O001", "订单ID", "O001", "订单金额", "25"),
+                row("O002", "订单ID", "O002", "订单金额", "10"));
+        RuleBinding binding = template("T004", "AGGREGATION_EQUALS")
+                .param("source", "order_item")
+                .param("target", "order")
+                .param("groupBy", "订单ID")
+                .param("sum", "小计金额")
+                .param("targetField", "订单金额")
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("T004", "聚合金额一致"), tables(items, orders), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("O002");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("10");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("8");
+    }
+
+    @Test
+    void aggregationEqualsTemplateReportsMissingTargetGroup() {
+        DataTable items = table("order_item", "明细ID",
+                row("I001", "明细ID", "I001", "订单ID", "O404", "小计金额", "10"));
+        DataTable orders = table("order", "订单ID",
+                row("O001", "订单ID", "O001", "订单金额", "10"));
+        RuleBinding binding = template("T004", "AGGREGATION_EQUALS")
+                .param("source", "order_item")
+                .param("target", "order")
+                .param("groupBy", "订单ID")
+                .param("sum", "小计金额")
+                .param("targetField", "订单金额")
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("T004", "聚合金额一致"), tables(items, orders), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getTableName()).isEqualTo("order_item");
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("I001");
+        assertThat(findings.get(0).getExpectedValue()).contains("order");
+    }
+
+    @Test
+    void duplicateCheckTemplateReportsRepeatedGroups() {
+        DataTable payments = table("payment", "支付ID",
+                row("P001", "支付ID", "P001", "订单ID", "O001", "支付状态", "支付成功"),
+                row("P002", "支付ID", "P002", "订单ID", "O001", "支付状态", "支付成功"),
+                row("P003", "支付ID", "P003", "订单ID", "O002", "支付状态", "支付成功"));
+        RuleBinding binding = template("T005", "DUPLICATE_CHECK")
+                .param("tableName", "payment")
+                .param("groupBy", Arrays.asList("订单ID", "支付状态"))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("T005", "重复支付检查"), tables(payments), binding);
+
+        assertThat(findings).hasSize(2);
+        assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("P001", "P002");
+    }
+
     private RuleDefinition rule(String ruleId, String ruleName) {
         RuleDefinition rule = new RuleDefinition();
         rule.setRuleId(ruleId);
@@ -90,18 +217,37 @@ class TemplateRuleExecutorTest {
         return binding;
     }
 
-    private Map<String, DataTable> tables(DataTable table) {
+    private BindingBuilder template(String ruleId, String templateCode) {
+        return new BindingBuilder(ruleId, templateCode);
+    }
+
+    private Map<String, DataTable> tables(DataTable... dataTables) {
         Map<String, DataTable> tables = new LinkedHashMap<>();
-        tables.put(table.getLogicalName(), table);
+        for (DataTable table : dataTables) {
+            tables.put(table.getLogicalName(), table);
+        }
         return tables;
     }
 
     private DataTable table(String logicalName, String primaryKeyField, DataRow... rows) {
         DataTable table = new DataTable();
         table.setLogicalName(logicalName);
-        table.setHeaders(Arrays.asList(primaryKeyField));
+        table.setHeaders(headers(primaryKeyField, rows));
         table.setRows(Arrays.asList(rows));
         return table;
+    }
+
+    private List<String> headers(String primaryKeyField, DataRow[] rows) {
+        List<String> headers = new java.util.ArrayList<>();
+        headers.add(primaryKeyField);
+        for (DataRow row : rows) {
+            for (String field : row.getValues().keySet()) {
+                if (!headers.contains(field)) {
+                    headers.add(field);
+                }
+            }
+        }
+        return headers;
     }
 
     private DataRow row(String primaryKey, String... values) {
@@ -113,5 +259,26 @@ class TemplateRuleExecutorTest {
         }
         row.setValues(cells);
         return row;
+    }
+
+    private static class BindingBuilder {
+        private final RuleBinding binding = new RuleBinding();
+        private final Map<String, Object> params = new LinkedHashMap<>();
+
+        BindingBuilder(String ruleId, String templateCode) {
+            binding.setRuleId(ruleId);
+            binding.setExecutorType("TEMPLATE");
+            binding.setTemplateCode(templateCode);
+        }
+
+        BindingBuilder param(String key, Object value) {
+            params.put(key, value);
+            return this;
+        }
+
+        RuleBinding build() {
+            binding.setTemplateParams(params);
+            return binding;
+        }
     }
 }
