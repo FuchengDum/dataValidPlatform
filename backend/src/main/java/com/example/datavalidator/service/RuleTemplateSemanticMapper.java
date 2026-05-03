@@ -9,6 +9,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 class RuleTemplateSemanticMapper {
     private static final List<String> FIELD_TEMPLATES = Arrays.asList("NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE");
@@ -20,6 +22,10 @@ class RuleTemplateSemanticMapper {
             return match;
         }
         match = signedChangeExpression(rule, tableFields, text);
+        if (match.isApplicable()) {
+            return match;
+        }
+        match = genericRowExpression(rule, tableFields, text);
         if (match.isApplicable()) {
             return match;
         }
@@ -126,6 +132,122 @@ class RuleTemplateSemanticMapper {
         return RuleTemplateSemanticMatch.unavailable("条件符号计算规则缺少可映射字段。");
     }
 
+    private RuleTemplateSemanticMatch genericRowExpression(RuleDefinitionEntity rule,
+                                                           Map<String, List<String>> tableFields,
+                                                           String text) {
+        for (String tableName : applicableTables(rule, tableFields)) {
+            List<String> headers = tableFields.getOrDefault(tableName, Collections.emptyList());
+            List<Map<String, Object>> conditions = new ArrayList<>();
+            addRatioCondition(conditions, headers, text);
+            addMultiplicationCondition(conditions, headers, text);
+            addStatusComparisonConditions(conditions, headers, text);
+            addPositiveQuantityCondition(conditions, headers, text);
+            addStatusTimeConditions(conditions, headers, text);
+            if (!conditions.isEmpty()) {
+                Map<String, Object> params = new LinkedHashMap<>();
+                params.put("tableName", tableName);
+                params.put("conditions", conditions);
+                return applicable("ROW_EXPRESSION", params, "基于条件行断言语义推荐结构化行表达式模板。", "HIGH");
+            }
+        }
+        return RuleTemplateSemanticMatch.unavailable("规则文本未匹配通用行断言。");
+    }
+
+    private void addRatioCondition(List<Map<String, Object>> conditions, List<String> headers, String text) {
+        String normalized = normalize(text);
+        for (String left : fieldsInText(headers, text)) {
+            for (String base : fieldsInText(headers, text)) {
+                if (left.equals(base)) {
+                    continue;
+                }
+                if (normalized.contains(left + ">" + base + "*0.5")
+                        || normalized.contains(left + "不得超过" + base + "的50%")) {
+                    conditions.add(condition(field(left), "<=", op("*", field(base), literal("0.5"))));
+                    return;
+                }
+            }
+        }
+    }
+
+    private void addMultiplicationCondition(List<Map<String, Object>> conditions, List<String> headers, String text) {
+        String normalized = normalize(text).replace("×", "*");
+        for (String left : fieldsInText(headers, text)) {
+            for (String first : fieldsInText(headers, text)) {
+                for (String second : fieldsInText(headers, text)) {
+                    if (left.equals(first) || left.equals(second) || first.equals(second)) {
+                        continue;
+                    }
+                    if (normalized.contains(left + "=" + first + "*" + second)
+                            || normalized.contains(left + "-" + first + "*" + second)
+                            || normalized.contains(left + "!=" + first + "*" + second)) {
+                        conditions.add(condition(field(left), "==", op("*", field(first), field(second))));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    private void addStatusComparisonConditions(List<Map<String, Object>> conditions, List<String> headers, String text) {
+        String stateField = fieldContaining(headers, text, "状态", "类型");
+        String stateValue = quotedValueAfterField(text, stateField);
+        Object statePredicate = ValueParsers.isBlank(stateField) || ValueParsers.isBlank(stateValue)
+                ? null : condition(field(stateField), "==", literal(stateValue));
+        String normalized = normalize(text);
+        for (String left : fieldsInText(headers, text)) {
+            if (left.equals(stateField) || left.endsWith("ID")) {
+                continue;
+            }
+            for (String right : fieldsInText(headers, text)) {
+                if (left.equals(right) || right.equals(stateField) || right.endsWith("ID")) {
+                    continue;
+                }
+                if (normalized.contains(left + "<" + right)) {
+                    conditions.add(withWhen(condition(field(left), ">=", field(right)), statePredicate));
+                    return;
+                }
+            }
+            if (statePredicate != null && (normalized.contains(left + "<=0") || normalized.contains(left + "<0")
+                    || text.contains(left + "必须为正") || text.contains(left + "应大于0"))) {
+                conditions.add(withWhen(condition(field(left), ">", literal(0)), statePredicate));
+                return;
+            }
+            if (normalized.contains(left + "=0") || text.contains(left + "不得为0")) {
+                conditions.add(withWhen(condition(field(left), "!=", literal(0)), statePredicate));
+            }
+        }
+    }
+
+    private void addPositiveQuantityCondition(List<Map<String, Object>> conditions, List<String> headers, String text) {
+        if (!containsAny(text, "正整数", "必须为正数", "数量<=0", "数量<0")) {
+            return;
+        }
+        String quantity = fieldContaining(headers, text, "数量");
+        if (ValueParsers.isBlank(quantity)) {
+            return;
+        }
+        String type = fieldContaining(headers, text, "类型");
+        if (!ValueParsers.isBlank(type) && containsAny(text, "入库", "出库")) {
+            conditions.add(when(condition(field(quantity), ">", literal(0)),
+                    condition(field(type), "in", Arrays.asList("入库", "出库"))));
+            return;
+        }
+        conditions.add(condition(field(quantity), ">", literal(0)));
+    }
+
+    private void addStatusTimeConditions(List<Map<String, Object>> conditions, List<String> headers, String text) {
+        if (!(text.contains("支付时间") && text.contains("下单时间") && text.contains("待支付"))) {
+            return;
+        }
+        if (!headers.contains("订单状态") || !headers.contains("支付时间") || !headers.contains("下单时间")) {
+            return;
+        }
+        conditions.add(when(condition(field("支付时间"), "isNull", null),
+                condition(field("订单状态"), "==", literal("待支付"))));
+        conditions.add(when(condition(field("支付时间"), ">=", field("下单时间")),
+                condition(field("订单状态"), "in", Arrays.asList("已支付", "已发货", "已完成"))));
+    }
+
     private RowRelationship rowRelationship(List<String> headers, String text) {
         List<String> fields = fieldsInText(headers, text);
         for (String left : fields) {
@@ -173,7 +295,7 @@ class RuleTemplateSemanticMapper {
     private RuleTemplateSemanticMatch existsInTable(RuleDefinitionEntity rule,
                                                     Map<String, List<String>> tableFields,
                                                     String text) {
-        if (!containsAny(text, "存在于", "必须存在", "关联记录", "exists")) {
+        if (!containsAny(text, "存在于", "中存在", "必须存在", "关联记录", "exists")) {
             return RuleTemplateSemanticMatch.unavailable("规则文本未匹配跨表存在性。");
         }
         List<String> tables = applicableTables(rule, tableFields);
@@ -202,16 +324,16 @@ class RuleTemplateSemanticMapper {
             return RuleTemplateSemanticMatch.unavailable("跨表字段一致规则缺少两张表。");
         }
         String key = keyField(tableFields.get(tables.get(0)), tableFields.get(tables.get(1)), text);
-        String field = commonFieldInText(tableFields.get(tables.get(0)), tableFields.get(tables.get(1)), text, key);
-        if (ValueParsers.isBlank(key) || ValueParsers.isBlank(field)) {
+        FieldPair pair = fieldPair(tableFields.get(tables.get(0)), tableFields.get(tables.get(1)), text, key);
+        if (ValueParsers.isBlank(key) || pair == null) {
             return RuleTemplateSemanticMatch.unavailable("跨表字段一致规则缺少 key 或比较字段。");
         }
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("source", tables.get(0));
         params.put("target", tables.get(1));
         params.put("key", key);
-        params.put("sourceField", field);
-        params.put("targetField", field);
+        params.put("sourceField", pair.sourceField);
+        params.put("targetField", pair.targetField);
         return applicable("FIELD_EQUALS", params, "基于跨表字段一致语义推荐模板。", "HIGH");
     }
 
@@ -227,9 +349,14 @@ class RuleTemplateSemanticMapper {
         }
         String source = tables.get(0);
         String target = tables.get(1);
+        String sumField = summedField(tableFields.get(source), text);
+        if (ValueParsers.isBlank(sumField) && tables.size() > 1) {
+            source = tables.get(1);
+            target = tables.get(0);
+            sumField = summedField(tableFields.get(source), text);
+        }
         String groupBy = commonFieldInText(tableFields.get(source), tableFields.get(target), text, "");
-        String sumField = fieldContaining(tableFields.get(source), text, "小计", "金额", "数量");
-        String targetField = fieldContaining(tableFields.get(target), text, "金额", "数量");
+        String targetField = targetAggregationField(tableFields.get(target), text, sumField);
         if (ValueParsers.isBlank(groupBy) || ValueParsers.isBlank(sumField) || ValueParsers.isBlank(targetField)) {
             return RuleTemplateSemanticMatch.unavailable("聚合一致规则缺少分组字段、汇总字段或目标字段。");
         }
@@ -257,6 +384,10 @@ class RuleTemplateSemanticMapper {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("tableName", tableName);
         params.put("groupBy", fields);
+        Object where = duplicateWhere(tableFields.getOrDefault(tableName, Collections.emptyList()), text);
+        if (where != null) {
+            params.put("where", where);
+        }
         return applicable("DUPLICATE_CHECK", params, "基于唯一组合语义推荐重复检查模板。", "HIGH");
     }
 
@@ -276,6 +407,18 @@ class RuleTemplateSemanticMapper {
         condition.put("left", left);
         condition.put("operator", operator);
         condition.put("right", right);
+        return condition;
+    }
+
+    private Map<String, Object> when(Map<String, Object> condition, Object predicate) {
+        condition.put("when", predicate);
+        return condition;
+    }
+
+    private Map<String, Object> withWhen(Map<String, Object> condition, Object predicate) {
+        if (predicate != null) {
+            condition.put("when", predicate);
+        }
         return condition;
     }
 
@@ -313,7 +456,7 @@ class RuleTemplateSemanticMapper {
 
     private List<String> applicableTables(RuleDefinitionEntity rule, Map<String, List<String>> tableFields) {
         List<String> result = new ArrayList<>();
-        for (String item : safe(rule.getApplicableTables()).split("[,，/、\\s]+")) {
+        for (String item : safe(rule.getApplicableTables()).split("[,，/、↔\\s]+")) {
             if (tableFields.containsKey(item) && !result.contains(item)) {
                 result.add(item);
             }
@@ -353,6 +496,36 @@ class RuleTemplateSemanticMapper {
         return "";
     }
 
+    private FieldPair fieldPair(List<String> sourceFields, List<String> targetFields, String text, String key) {
+        String common = commonFieldInText(sourceFields, targetFields, text, key);
+        if (!ValueParsers.isBlank(common)) {
+            return new FieldPair(common, common);
+        }
+        String source = firstComparableField(sourceFields, text, key);
+        String target = firstComparableField(targetFields, text, key);
+        if (ValueParsers.isBlank(source) || ValueParsers.isBlank(target)) {
+            return null;
+        }
+        return new FieldPair(source, target);
+    }
+
+    private String firstComparableField(List<String> fields, String text, String key) {
+        for (String field : fields) {
+            if (!field.equals(key) && !field.endsWith("ID") && text.contains(field)) {
+                return field;
+            }
+        }
+        return "";
+    }
+
+    private String quotedValueAfterField(String text, String field) {
+        if (ValueParsers.isBlank(field)) {
+            return "";
+        }
+        Matcher matcher = Pattern.compile(Pattern.quote(field) + "\\s*=\\s*'([^']+)'").matcher(text);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
     private String keyField(List<String> left, List<String> right, String text) {
         for (String field : left) {
             if (right.contains(field) && text.contains("by " + field)) {
@@ -379,6 +552,42 @@ class RuleTemplateSemanticMapper {
             }
         }
         return "";
+    }
+
+    private String targetAggregationField(List<String> fields, String text, String sumField) {
+        for (String field : fields) {
+            if (!field.equals(sumField) && text.contains(field) && containsAny(field, "实付金额", "订单金额", "金额", "数量")) {
+                return field;
+            }
+        }
+        return "";
+    }
+
+    private String summedField(List<String> fields, String text) {
+        for (String field : fields) {
+            if (Pattern.compile("(?i)sum\\([^)]*" + Pattern.quote(field)).matcher(text).find()) {
+                return field;
+            }
+        }
+        String field = fieldContaining(fields, text, "小计");
+        if (!ValueParsers.isBlank(field)) {
+            return field;
+        }
+        field = fieldContaining(fields, text, "支付金额");
+        if (!ValueParsers.isBlank(field)) {
+            return field;
+        }
+        return "";
+    }
+
+    private Object duplicateWhere(List<String> fields, String text) {
+        for (String field : fields) {
+            String value = quotedValueAfterField(text, field);
+            if (!ValueParsers.isBlank(value)) {
+                return condition(field(field), "==", literal(value));
+            }
+        }
+        return null;
     }
 
     private String fieldContainingAll(List<String> fields, String text, String... keywords) {
@@ -423,6 +632,16 @@ class RuleTemplateSemanticMapper {
             this.left = left;
             this.base = base;
             this.deduction = deduction;
+        }
+    }
+
+    private static class FieldPair {
+        private final String sourceField;
+        private final String targetField;
+
+        FieldPair(String sourceField, String targetField) {
+            this.sourceField = sourceField;
+            this.targetField = targetField;
         }
     }
 }

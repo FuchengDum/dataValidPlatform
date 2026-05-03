@@ -58,6 +58,9 @@ class TemplateBindingValidator {
         for (String field : fields) {
             requireField(headers, field);
         }
+        if (params.containsKey("where")) {
+            RowExpressionEvaluator.validatePredicate(params.get("where"), headers);
+        }
     }
 
     private static void validateFieldExpression(Map<String, Object> params, Map<String, List<String>> headersByTable) {

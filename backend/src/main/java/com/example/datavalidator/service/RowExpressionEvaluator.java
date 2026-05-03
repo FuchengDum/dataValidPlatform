@@ -15,6 +15,8 @@ import java.util.Optional;
 
 class RowExpressionEvaluator {
     private static final List<String> COMPARISON_OPERATORS = Arrays.asList("==", "!=", ">", ">=", "<", "<=");
+    private static final List<String> PREDICATE_OPERATORS = Arrays.asList(
+            "==", "!=", ">", ">=", "<", "<=", "in", "notIn", "isNull", "isNotNull");
     private static final List<String> ARITHMETIC_OPERATORS = Arrays.asList("+", "-", "*", "/");
 
     private RowExpressionEvaluator() {
@@ -22,6 +24,9 @@ class RowExpressionEvaluator {
 
     static Optional<Result> evaluate(Object rawConditions, DataRow row) {
         for (Map<String, Object> condition : conditions(rawConditions)) {
+            if (condition.containsKey("when") && !matches(condition.get("when"), row)) {
+                continue;
+            }
             Result result = evaluateCondition(condition, row);
             if (!result.isSatisfied()) {
                 return Optional.of(result);
@@ -30,18 +35,20 @@ class RowExpressionEvaluator {
         return Optional.empty();
     }
 
+    static boolean matches(Object rawPredicate, DataRow row) {
+        return evaluateCondition(asMap(rawPredicate), row).isSatisfied();
+    }
+
     static void validate(Object rawConditions, List<String> headers) {
         List<Map<String, Object>> conditions = conditions(rawConditions);
         if (conditions.isEmpty()) {
             throw new BadRequestException("模板参数 conditions 不能为空");
         }
         for (Map<String, Object> condition : conditions) {
-            String operator = stringValue(condition.get("operator"));
-            if (!COMPARISON_OPERATORS.contains(operator)) {
-                throw new BadRequestException("不支持的行表达式操作符: " + operator);
+            if (condition.containsKey("when")) {
+                validatePredicate(condition.get("when"), headers);
             }
-            validateNode(condition.get("left"), headers);
-            validateNode(condition.get("right"), headers);
+            validatePredicate(condition, headers);
         }
     }
 
@@ -49,9 +56,13 @@ class RowExpressionEvaluator {
         ExpressionValue left = evaluateNode(condition.get("left"), row);
         ExpressionValue right = evaluateNode(condition.get("right"), row);
         String operator = stringValue(condition.get("operator"));
-        boolean satisfied = compare(left, operator, right);
-        return new Result(satisfied, left.firstField(), left.text + " " + operator + " " + right.text,
+        boolean satisfied = compare(left, operator, right, condition.get("right"));
+        return new Result(satisfied, left.firstField(), conditionText(left.text, operator, right.text),
                 left.summary() + "；" + right.summary(), left.text, operator, right.text);
+    }
+
+    static void validatePredicate(Object rawPredicate, List<String> headers) {
+        validatePredicate(rawPredicate, headers, "行表达式条件格式不支持", "不支持的行表达式操作符: ");
     }
 
     @SuppressWarnings("unchecked")
@@ -73,6 +84,9 @@ class RowExpressionEvaluator {
     @SuppressWarnings("unchecked")
     private static void validateNode(Object rawNode, List<String> headers) {
         if (rawNode instanceof Number || rawNode instanceof String) {
+            return;
+        }
+        if (rawNode instanceof List) {
             return;
         }
         if (!(rawNode instanceof Map)) {
@@ -104,17 +118,20 @@ class RowExpressionEvaluator {
     }
 
     @SuppressWarnings("unchecked")
-    private static void validatePredicate(Object rawPredicate, List<String> headers) {
+    private static void validatePredicate(Object rawPredicate, List<String> headers,
+                                          String formatMessage, String operatorMessage) {
         if (!(rawPredicate instanceof Map)) {
-            throw new BadRequestException("行表达式 if 条件格式不支持");
+            throw new BadRequestException(formatMessage);
         }
         Map<String, Object> predicate = (Map<String, Object>) rawPredicate;
         String operator = stringValue(predicate.get("operator"));
-        if (!COMPARISON_OPERATORS.contains(operator)) {
-            throw new BadRequestException("不支持的行表达式 if 操作符: " + operator);
+        if (!PREDICATE_OPERATORS.contains(operator)) {
+            throw new BadRequestException(operatorMessage + operator);
         }
         validateNode(predicate.get("left"), headers);
-        validateNode(predicate.get("right"), headers);
+        if (!"isNull".equals(operator) && !"isNotNull".equals(operator)) {
+            validateNode(predicate.get("right"), headers);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -122,6 +139,10 @@ class RowExpressionEvaluator {
         if (rawNode instanceof Number || rawNode instanceof String) {
             String value = stringValue(rawNode);
             return new ExpressionValue(value, value, ValueParsers.decimal(value), "");
+        }
+        if (rawNode instanceof List) {
+            String value = String.join(",", values(rawNode));
+            return new ExpressionValue(value, value, Optional.empty(), "");
         }
         if (!(rawNode instanceof Map)) {
             return ExpressionValue.unavailable("未知表达式");
@@ -172,6 +193,9 @@ class RowExpressionEvaluator {
         if (rawNode instanceof Number || rawNode instanceof String) {
             return stringValue(rawNode);
         }
+        if (rawNode instanceof List) {
+            return String.join(",", values(rawNode));
+        }
         if (!(rawNode instanceof Map)) {
             return "未知表达式";
         }
@@ -213,7 +237,19 @@ class RowExpressionEvaluator {
         }
     }
 
-    private static boolean compare(ExpressionValue left, String operator, ExpressionValue right) {
+    private static boolean compare(ExpressionValue left, String operator, ExpressionValue right, Object rawRight) {
+        if ("isNull".equals(operator)) {
+            return ValueParsers.isBlank(left.rawValue);
+        }
+        if ("isNotNull".equals(operator)) {
+            return !ValueParsers.isBlank(left.rawValue);
+        }
+        if ("in".equals(operator)) {
+            return values(rawRight).contains(left.rawValue);
+        }
+        if ("notIn".equals(operator)) {
+            return !values(rawRight).contains(left.rawValue);
+        }
         if (left.decimal.isPresent() && right.decimal.isPresent()) {
             int compared = left.decimal.get().compareTo(right.decimal.get());
             switch (operator) {
@@ -229,8 +265,37 @@ class RowExpressionEvaluator {
         switch (operator) {
             case "==": return left.rawValue.equals(right.rawValue);
             case "!=": return !left.rawValue.equals(right.rawValue);
+            case ">": return compareText(left, right) > 0;
+            case ">=": return compareText(left, right) >= 0;
+            case "<": return compareText(left, right) < 0;
+            case "<=": return compareText(left, right) <= 0;
             default: return false;
         }
+    }
+
+    private static int compareText(ExpressionValue left, ExpressionValue right) {
+        if (ValueParsers.isBlank(left.rawValue) || ValueParsers.isBlank(right.rawValue)) {
+            return -1;
+        }
+        return left.rawValue.compareTo(right.rawValue);
+    }
+
+    private static List<String> values(Object rawValue) {
+        if (!(rawValue instanceof List)) {
+            return Collections.singletonList(stringValue(rawValue));
+        }
+        List<String> result = new ArrayList<>();
+        for (Object item : (List<?>) rawValue) {
+            result.add(stringValue(item));
+        }
+        return result;
+    }
+
+    private static String conditionText(String left, String operator, String right) {
+        if ("isNull".equals(operator) || "isNotNull".equals(operator)) {
+            return left + " " + operator;
+        }
+        return left + " " + operator + " " + right;
     }
 
     private static String formatDecimal(BigDecimal value) {

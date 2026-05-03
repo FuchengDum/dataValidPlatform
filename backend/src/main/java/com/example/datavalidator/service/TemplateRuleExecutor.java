@@ -43,7 +43,7 @@ public class TemplateRuleExecutor {
             case "AGGREGATION_EQUALS":
                 return aggregationEquals(rule, tables, params);
             case "DUPLICATE_CHECK":
-                return duplicateCheck(rule, table(tables, params), fields(params.get("groupBy")));
+                return duplicateCheck(rule, table(tables, params), fields(params.get("groupBy")), params.get("where"));
             default:
                 return Collections.emptyList();
         }
@@ -247,12 +247,16 @@ public class TemplateRuleExecutor {
         return findings;
     }
 
-    private List<ValidationFinding> duplicateCheck(RuleDefinition rule, DataTable table, List<String> groupBy) {
+    private List<ValidationFinding> duplicateCheck(RuleDefinition rule, DataTable table, List<String> groupBy,
+                                                   Object where) {
         if (table == null || groupBy.isEmpty()) {
             return Collections.emptyList();
         }
         Map<String, List<DataRow>> groups = new HashMap<>();
         for (DataRow row : table.getRows()) {
+            if (where instanceof Map && !RowExpressionEvaluator.matches(where, row)) {
+                continue;
+            }
             groups.computeIfAbsent(groupKey(row, groupBy), ignored -> new ArrayList<>()).add(row);
         }
         List<ValidationFinding> findings = new ArrayList<>();

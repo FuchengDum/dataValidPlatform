@@ -267,14 +267,15 @@ public class AiAssistService {
                 + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE、FIELD_EXPRESSION、"
                 + "ROW_EXPRESSION、EXISTS_IN_TABLE、FIELD_EQUALS、AGGREGATION_EQUALS、DUPLICATE_CHECK。"
                 + "字段级模板参数必须包含 tableName 和 fields；FIELD_EXPRESSION 参数必须包含 tableName 和 expression。"
-                + "ROW_EXPRESSION 参数必须包含 tableName 和 conditions；conditions 每项包含 left、operator、right；"
+                + "ROW_EXPRESSION 参数必须包含 tableName 和 conditions；conditions 每项包含 left、operator、right，"
+                + "可选 when 表达仅在满足条件时执行；operator 支持 ==、!=、>、>=、<、<=、in、notIn、isNull、isNotNull。"
                 + "表达式节点可使用 field、literal/value，或 op + left + right 表达 +、-、*、/，"
                 + "也可使用 if + then + else 表达条件分支，if 内包含 left、operator、right。"
                 + "EXISTS_IN_TABLE 参数必须包含 source、target、key；"
                 + "FIELD_EQUALS 参数必须包含 source、target、key、sourceField、targetField；"
                 + "AGGREGATION_EQUALS 参数必须包含 source、target、groupBy、sum、targetField，可选 targetKey；"
-                + "DUPLICATE_CHECK 参数必须包含 tableName 和 groupBy。"
-                + "金额关系、库存连续性、汇总关系、跨表关系必须推荐能表达业务关系的模板，不能降级为单纯类型检查。"
+                + "DUPLICATE_CHECK 参数必须包含 tableName 和 groupBy，可选 where 过滤条件。"
+                + "金额关系、状态条件、时间逻辑、库存连续性、汇总关系、跨表关系必须推荐能表达业务关系的模板，不能降级为单纯类型检查。"
                 + "所有参数只能使用用户提供的表名和字段名。";
     }
 
@@ -432,14 +433,32 @@ public class AiAssistService {
                 continue;
             }
             Map<?, ?> condition = (Map<?, ?>) item;
-            result.add(rowExpressionText(condition.get("left")) + " "
-                    + objectString(condition.get("operator")) + " "
-                    + rowExpressionText(condition.get("right")));
+            String text = rowConditionText(condition);
+            if (condition.containsKey("when")) {
+                text = "when " + rowConditionText(objectMapRaw(condition.get("when"))) + " then " + text;
+            }
+            result.add(text);
         }
         return result;
     }
 
+    private String rowConditionText(Map<?, ?> condition) {
+        String operator = objectString(condition.get("operator"));
+        if ("isNull".equals(operator) || "isNotNull".equals(operator)) {
+            return rowExpressionText(condition.get("left")) + " " + operator;
+        }
+        return rowExpressionText(condition.get("left")) + " " + operator + " "
+                + rowExpressionText(condition.get("right"));
+    }
+
     private String rowExpressionText(Object rawExpression) {
+        if (rawExpression instanceof List) {
+            List<String> values = new ArrayList<>();
+            for (Object item : (List<?>) rawExpression) {
+                values.add(objectString(item));
+            }
+            return String.join(",", values);
+        }
         if (!(rawExpression instanceof Map)) {
             return objectString(rawExpression);
         }
