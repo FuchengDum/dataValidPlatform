@@ -78,8 +78,23 @@
         <h2>规则覆盖</h2>
         <div class="rule-list">
           <div v-for="rule in rules" :key="rule.ruleId" class="rule-item">
-            <strong>{{ rule.ruleId }}</strong>
-            <span>{{ rule.ruleName }}</span>
+            <div class="rule-main">
+              <strong>{{ rule.ruleId }}</strong>
+              <span>{{ rule.ruleName }}</span>
+            </div>
+            <div class="rule-binding">
+              <span :class="['tag', rule.executorType === 'TEMPLATE' ? 'template' : 'builtin']">
+                {{ labelExecutor(rule.executorType) }}
+              </span>
+              <span v-if="rule.templateCode" class="template-code">{{ rule.templateCode }}</span>
+            </div>
+            <p v-if="rule.templateParamSummary" class="param-summary">{{ rule.templateParamSummary }}</p>
+            <button
+              class="mini-button"
+              :disabled="!rule.templateCode || loading"
+              @click="switchRuleBinding(rule)">
+              {{ rule.executorType === 'TEMPLATE' ? '切回内置' : '切到模板' }}
+            </button>
           </div>
         </div>
       </aside>
@@ -135,6 +150,33 @@
             <dt>建议</dt>
             <dd>{{ detail.finding.suggestion }}</dd>
           </dl>
+          <div class="detail-actions">
+            <button class="mini-button wide" :disabled="loading" @click="loadAiAnalysis">AI 分析</button>
+            <button class="mini-button wide" :disabled="loading" @click="loadValidationSqlDraft">只读校验 SQL</button>
+            <button class="mini-button wide" :disabled="loading" @click="loadManualReviewSqlDraft">人工核查 SQL</button>
+          </div>
+          <section v-if="aiAnalysis" class="assist-box">
+            <h3>AI 辅助分析</h3>
+            <dl>
+              <dt>来源</dt>
+              <dd>{{ aiAnalysis.source }} · {{ aiAnalysis.generatedByAi ? '模型生成' : '本地降级' }}</dd>
+              <dt>原因</dt>
+              <dd>{{ aiAnalysis.reason }}</dd>
+              <dt>影响</dt>
+              <dd>{{ aiAnalysis.impact }}</dd>
+              <dt>建议</dt>
+              <dd>{{ aiAnalysis.suggestion }}</dd>
+              <dt>证据摘要</dt>
+              <dd>{{ aiAnalysis.evidenceSummary }}</dd>
+            </dl>
+            <p v-for="warning in aiAnalysis.warnings" :key="warning" class="assist-warning">{{ warning }}</p>
+          </section>
+          <section v-if="sqlDraft" class="assist-box">
+            <h3>{{ labelDraftType(sqlDraft.draftType) }}</h3>
+            <p class="assist-meta">{{ sqlDraft.source }} · {{ sqlDraft.generatedByAi ? '模型生成' : '本地降级' }}</p>
+            <pre>{{ sqlDraft.sql }}</pre>
+            <p v-for="warning in sqlDraft.warnings" :key="warning" class="assist-warning">{{ warning }}</p>
+          </section>
           <h3>证据</h3>
           <div v-for="evidence in detail.evidences" :key="evidence.id" class="evidence">
             {{ evidence.evidenceType }} · {{ evidence.fieldName }} · {{ evidence.calculation }}
@@ -149,13 +191,16 @@
 <script setup>
 import { reactive, ref } from 'vue'
 import {
+  analyzeFinding,
   createReport,
+  draftValidationSql,
   fetchFindingDetail,
   fetchFindings,
   fetchRules,
   fetchSummary,
   reportDownloadUrl,
   startValidation,
+  updateRuleBinding,
   uploadWorkbook
 } from './api/client'
 
@@ -165,6 +210,8 @@ const summary = ref(null)
 const findings = ref([])
 const rules = ref([])
 const detail = ref(null)
+const aiAnalysis = ref(null)
+const sqlDraft = ref(null)
 const message = ref('')
 const error = ref('')
 const loading = ref(false)
@@ -225,6 +272,8 @@ async function selectFinding(findingId) {
   const result = await run(() => fetchFindingDetail(findingId), '异常详情已加载')
   if (result) {
     detail.value = result
+    aiAnalysis.value = null
+    sqlDraft.value = null
   }
 }
 
@@ -235,7 +284,60 @@ async function exportReport() {
   }
 }
 
+async function switchRuleBinding(rule) {
+  if (!dataset.value || !rule.templateCode) return
+  const nextExecutorType = rule.executorType === 'TEMPLATE' ? 'BUILTIN' : 'TEMPLATE'
+  const result = await run(() => updateRuleBinding(dataset.value.datasetId, rule.ruleId, {
+    executorType: nextExecutorType,
+    templateCode: rule.templateCode,
+    templateParams: rule.templateParams || {}
+  }), nextExecutorType === 'TEMPLATE' ? '已切换为模板执行' : '已切换为内置执行')
+  if (result) {
+    rules.value = await fetchRules(dataset.value.datasetId)
+  }
+}
+
+async function loadAiAnalysis() {
+  if (!detail.value) return
+  const result = await run(() => analyzeFinding(detail.value.finding.findingId), 'AI 分析已生成')
+  if (result) {
+    aiAnalysis.value = result
+  }
+}
+
+async function loadValidationSqlDraft() {
+  await loadSqlDraft('VALIDATION_CHECK')
+}
+
+async function loadManualReviewSqlDraft() {
+  await loadSqlDraft('MANUAL_REVIEW')
+}
+
+async function loadSqlDraft(draftType) {
+  if (!detail.value) return
+  const finding = detail.value.finding
+  const result = await run(() => draftValidationSql({
+    draftType,
+    tableName: finding.tableName,
+    fieldName: finding.fieldName,
+    actualValue: finding.actualValue,
+    expectedValue: finding.expectedValue,
+    recordKey: finding.recordKey
+  }), draftType === 'MANUAL_REVIEW' ? '人工核查 SQL 草案已生成' : '只读校验 SQL 草案已生成')
+  if (result) {
+    sqlDraft.value = result
+  }
+}
+
 function labelSeverity(severity) {
   return severity === 'CRITICAL' ? '严重' : '警告'
+}
+
+function labelExecutor(executorType) {
+  return executorType === 'TEMPLATE' ? '模板' : '内置'
+}
+
+function labelDraftType(draftType) {
+  return draftType === 'MANUAL_REVIEW' ? '人工核查 SQL 草案' : '只读校验 SQL 草案'
 }
 </script>

@@ -35,6 +35,17 @@ public class JsonService {
         }
     }
 
+    public Map<String, Object> readObjectMap(String json) {
+        if (json == null || json.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception ex) {
+            throw new IllegalStateException("JSON反序列化失败: " + ex.getMessage(), ex);
+        }
+    }
+
     public List<String> readStringList(String json) {
         if (json == null || json.isEmpty()) {
             return Collections.emptyList();

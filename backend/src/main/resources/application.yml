@@ -27,7 +27,9 @@ app:
     jdbc-readonly: true
     allow-sql-query-input: true
   ai:
-    enabled: false
-    provider: template
-    endpoint: ""
-    api-key: ""
+    enabled: ${LOCAL_AI_ENABLED:false}
+    provider: openai-compatible
+    endpoint: ${LOCAL_AI_ENDPOINT:}
+    api-key: ${LOCAL_AI_API_KEY:}
+    model: ${LOCAL_AI_MODEL:local-model}
+    timeout-seconds: ${LOCAL_AI_TIMEOUT_SECONDS:30}

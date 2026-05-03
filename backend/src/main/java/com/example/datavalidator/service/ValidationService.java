@@ -3,15 +3,18 @@ package com.example.datavalidator.service;
 import com.example.datavalidator.domain.DataRow;
 import com.example.datavalidator.domain.DataTable;
 import com.example.datavalidator.domain.Evidence;
+import com.example.datavalidator.domain.RuleBinding;
 import com.example.datavalidator.domain.RuleDefinition;
 import com.example.datavalidator.domain.Severity;
 import com.example.datavalidator.domain.ValidationFinding;
 import com.example.datavalidator.domain.WorkbookDataset;
 import com.example.datavalidator.exception.BadRequestException;
 import com.example.datavalidator.persistence.FindingEvidenceEntity;
+import com.example.datavalidator.persistence.RuleBindingEntity;
 import com.example.datavalidator.persistence.ValidationFindingEntity;
 import com.example.datavalidator.persistence.ValidationJobEntity;
 import com.example.datavalidator.repository.FindingEvidenceRepository;
+import com.example.datavalidator.repository.RuleBindingRepository;
 import com.example.datavalidator.repository.ValidationFindingRepository;
 import com.example.datavalidator.repository.ValidationJobRepository;
 import org.springframework.stereotype.Service;
@@ -36,17 +39,23 @@ public class ValidationService {
     private final ValidationJobRepository jobRepository;
     private final ValidationFindingRepository findingRepository;
     private final FindingEvidenceRepository evidenceRepository;
+    private final RuleBindingRepository bindingRepository;
+    private final TemplateRuleExecutor templateRuleExecutor;
     private final JsonService jsonService;
 
     public ValidationService(ExcelImportService excelImportService,
                              ValidationJobRepository jobRepository,
                              ValidationFindingRepository findingRepository,
                              FindingEvidenceRepository evidenceRepository,
+                             RuleBindingRepository bindingRepository,
+                             TemplateRuleExecutor templateRuleExecutor,
                              JsonService jsonService) {
         this.excelImportService = excelImportService;
         this.jobRepository = jobRepository;
         this.findingRepository = findingRepository;
         this.evidenceRepository = evidenceRepository;
+        this.bindingRepository = bindingRepository;
+        this.templateRuleExecutor = templateRuleExecutor;
         this.jsonService = jsonService;
     }
 
@@ -121,7 +130,15 @@ public class ValidationService {
     private List<ValidationFinding> executeRules(WorkbookDataset dataset) {
         List<ValidationFinding> findings = new ArrayList<>();
         Map<String, DataTable> tables = dataset.getBusinessTables();
+        Map<String, RuleBinding> bindings = bindingRepository.findByDatasetId(dataset.getDatasetId()).stream()
+                .map(this::toRuleBinding)
+                .collect(Collectors.toMap(RuleBinding::getRuleId, item -> item, (left, right) -> left));
         for (RuleDefinition rule : dataset.getRules()) {
+            RuleBinding binding = bindings.get(rule.getRuleId());
+            if (binding != null && "TEMPLATE".equals(binding.getExecutorType())) {
+                findings.addAll(templateRuleExecutor.execute(rule, tables, binding));
+                continue;
+            }
             switch (rule.getRuleId()) {
                 case "R001": nonNegative(rule, findings, tables.get("t_order"), "订单金额", "实付金额", "优惠金额"); break;
                 case "R002": required(rule, findings, tables.get("t_order"), "用户ID", "订单状态", "下单时间", "收货地址"); break;
@@ -157,6 +174,16 @@ public class ValidationService {
             }
         }
         return findings;
+    }
+
+    private RuleBinding toRuleBinding(RuleBindingEntity entity) {
+        RuleBinding binding = new RuleBinding();
+        binding.setRuleId(entity.getRuleId());
+        binding.setExecutorType(entity.getExecutorType());
+        binding.setBuiltinExecutorName(entity.getBuiltinExecutorName());
+        binding.setTemplateCode(entity.getTemplateCode());
+        binding.setTemplateParams(jsonService.readObjectMap(entity.getTemplateParamsJson()));
+        return binding;
     }
 
     private void required(RuleDefinition rule, List<ValidationFinding> findings, DataTable table, String... fields) {

@@ -11,10 +11,12 @@ import com.example.datavalidator.exception.BadRequestException;
 import com.example.datavalidator.persistence.DataRowSnapshotEntity;
 import com.example.datavalidator.persistence.DataTableSnapshotEntity;
 import com.example.datavalidator.persistence.DatasetEntity;
+import com.example.datavalidator.persistence.RuleBindingEntity;
 import com.example.datavalidator.persistence.RuleDefinitionEntity;
 import com.example.datavalidator.repository.DataRowSnapshotRepository;
 import com.example.datavalidator.repository.DataTableSnapshotRepository;
 import com.example.datavalidator.repository.DatasetRepository;
+import com.example.datavalidator.repository.RuleBindingRepository;
 import com.example.datavalidator.repository.RuleDefinitionRepository;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.Row;
@@ -57,17 +59,20 @@ public class ExcelImportService {
     private final DataTableSnapshotRepository tableRepository;
     private final DataRowSnapshotRepository rowRepository;
     private final RuleDefinitionRepository ruleRepository;
+    private final RuleBindingRepository bindingRepository;
     private final JsonService jsonService;
 
     public ExcelImportService(DatasetRepository datasetRepository,
                               DataTableSnapshotRepository tableRepository,
                               DataRowSnapshotRepository rowRepository,
                               RuleDefinitionRepository ruleRepository,
+                              RuleBindingRepository bindingRepository,
                               JsonService jsonService) {
         this.datasetRepository = datasetRepository;
         this.tableRepository = tableRepository;
         this.rowRepository = rowRepository;
         this.ruleRepository = ruleRepository;
+        this.bindingRepository = bindingRepository;
         this.jsonService = jsonService;
     }
 
@@ -328,7 +333,49 @@ public class ExcelImportService {
             entity.setExecutorType(rule.getExecutorType());
             entity.setTemplateCode(rule.getTemplateCode());
             ruleRepository.save(entity);
+            bindingRepository.save(defaultBinding(dataset.getDatasetId(), rule));
         }
+    }
+
+    private RuleBindingEntity defaultBinding(String datasetId, RuleDefinition rule) {
+        RuleBindingEntity entity = new RuleBindingEntity();
+        entity.setId(IdFactory.next("bind"));
+        entity.setDatasetId(datasetId);
+        entity.setRuleId(rule.getRuleId());
+        entity.setExecutorType("BUILTIN");
+        entity.setBuiltinExecutorName(rule.getRuleId());
+        entity.setTemplateCode(rule.getTemplateCode());
+        entity.setTemplateParamsJson(jsonService.write(defaultTemplateParams(rule.getRuleId())));
+        return entity;
+    }
+
+    private Map<String, Object> defaultTemplateParams(String ruleId) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        switch (ruleId) {
+            case "R001":
+                params.put("tableName", "t_order");
+                params.put("fields", Arrays.asList("订单金额", "实付金额", "优惠金额"));
+                break;
+            case "R002":
+                params.put("tableName", "t_order");
+                params.put("fields", Arrays.asList("用户ID", "订单状态", "下单时间", "收货地址"));
+                break;
+            case "R003":
+                params.put("tableName", "t_order");
+                params.put("fields", Arrays.asList("订单金额", "实付金额"));
+                break;
+            case "R008":
+                params.put("tableName", "t_product");
+                params.put("fields", Arrays.asList("库存数量", "成本价"));
+                break;
+            case "R013":
+                params.put("tableName", "t_payment");
+                params.put("fields", Arrays.asList("支付金额", "退款金额"));
+                break;
+            default:
+                break;
+        }
+        return params;
     }
 
     private RuleDefinition toRuleDefinition(RuleDefinitionEntity entity) {
