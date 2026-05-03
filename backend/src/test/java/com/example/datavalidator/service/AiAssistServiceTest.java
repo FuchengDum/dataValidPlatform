@@ -155,7 +155,7 @@ class AiAssistServiceTest {
         assertThat(result.isGeneratedByAi()).isFalse();
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
         assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
-        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+        assertThat(result.getWarnings().get(0)).contains("模型推荐校验失败").contains("字段不存在");
     }
 
     @Test
@@ -170,7 +170,7 @@ class AiAssistServiceTest {
         assertThat(result.isGeneratedByAi()).isFalse();
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
         assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
-        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+        assertThat(result.getWarnings().get(0)).contains("模型推荐校验失败");
     }
 
     @Test
@@ -265,7 +265,8 @@ class AiAssistServiceTest {
         assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
         assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
         assertThat(result.getConfidence()).isEqualTo("HIGH");
-        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+        assertThat(result.getWarnings().get(0)).contains("模型推荐校验失败")
+                .contains("模型推荐模板弱化了本地高置信语义映射");
     }
 
     @Test
@@ -288,6 +289,23 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingNormalizesEquivalentFieldExpressionModelRecommendationForR006() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order\","
+                + "\"expression\":\"实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额\"},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐金额关系表达式\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R006"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
     void recommendRuleBindingFallsBackWhenR006ModelExpressionMissesRequiredCondition() {
         AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
                 + "\"templateParams\":{\"tableName\":\"t_order\","
@@ -302,7 +320,8 @@ class AiAssistServiceTest {
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
         assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
         assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
-        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+        assertThat(result.getWarnings().get(0)).contains("模型推荐校验失败")
+                .contains("模型行表达式未覆盖本地语义映射条件");
     }
 
     @Test
@@ -318,7 +337,7 @@ class AiAssistServiceTest {
         assertThat(result.isGeneratedByAi()).isFalse();
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
         assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
-        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+        assertThat(result.getWarnings().get(0)).contains("模型推荐校验失败");
     }
 
     @Test

@@ -110,12 +110,11 @@ public class AiAssistService {
         if (modelResponse.isEmpty()) {
             return local;
         }
-        Optional<RuleBindingRecommendationResult> generated = modelResponse
-                .flatMap(content -> parseRecommendationResult(content, tableFields, localMatch));
-        if (generated.isPresent()) {
-            return generated.get();
+        RecommendationParseResult generated = parseRecommendationResult(modelResponse.get(), tableFields, localMatch);
+        if (generated.result.isPresent()) {
+            return generated.result.get();
         }
-        local.getWarnings().add("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+        local.getWarnings().add(fallbackWarning(generated.failureReason));
         return local;
     }
 
@@ -165,7 +164,7 @@ public class AiAssistService {
         return result;
     }
 
-    private Optional<RuleBindingRecommendationResult> parseRecommendationResult(
+    private RecommendationParseResult parseRecommendationResult(
             String content, Map<String, List<String>> tableFields, RuleTemplateSemanticMatch localMatch) {
         try {
             Map<String, Object> values = objectMapper.readValue(stripCodeFence(content),
@@ -173,8 +172,12 @@ public class AiAssistService {
             RuleBindingRecommendationResult result = new RuleBindingRecommendationResult();
             result.setTemplateCode(stringValue(values, "templateCode"));
             result.setTemplateParams(objectMap(values.get("templateParams")));
-            if (validationFailure(result, tableFields, localMatch).isPresent()) {
-                return Optional.empty();
+            Optional<String> failure = validationFailure(result, tableFields, localMatch);
+            if (failure.isPresent() && normalizeEquivalentFieldExpression(result, tableFields, localMatch)) {
+                failure = validationFailure(result, tableFields, localMatch);
+            }
+            if (failure.isPresent()) {
+                return RecommendationParseResult.failure(failure.get());
             }
             result.setSource(SOURCE_AI);
             result.setGeneratedByAi(true);
@@ -184,9 +187,9 @@ public class AiAssistService {
             if (isBlank(result.getExplanation())) {
                 result.setExplanation("模型根据规则文本和字段元数据生成的模板绑定建议，请人工确认后应用。");
             }
-            return Optional.of(result);
+            return RecommendationParseResult.success(result);
         } catch (Exception ex) {
-            return Optional.empty();
+            return RecommendationParseResult.failure("模型返回内容不是合法推荐 JSON");
         }
     }
 
@@ -376,6 +379,36 @@ public class AiAssistService {
             }
         }
         return Optional.empty();
+    }
+
+    private boolean normalizeEquivalentFieldExpression(RuleBindingRecommendationResult result,
+                                                       Map<String, List<String>> tableFields,
+                                                       RuleTemplateSemanticMatch localMatch) {
+        if (!localMatch.isApplicable() || !"ROW_EXPRESSION".equals(localMatch.getTemplateCode())
+                || !"FIELD_EXPRESSION".equals(result.getTemplateCode())) {
+            return false;
+        }
+        try {
+            TemplateBindingValidator.validate(result.getTemplateCode(), result.getTemplateParams(), tableFields);
+        } catch (BadRequestException ex) {
+            return false;
+        }
+        String expression = objectString(result.getTemplateParams().get("expression"));
+        String requiredExpression = String.join(" && ",
+                rowConditionTexts(localMatch.getTemplateParams().get("conditions")));
+        if (!containsAllConditions(expression, requiredExpression)) {
+            return false;
+        }
+        result.setTemplateCode(localMatch.getTemplateCode());
+        result.setTemplateParams(new LinkedHashMap<>(localMatch.getTemplateParams()));
+        return true;
+    }
+
+    private String fallbackWarning(String failureReason) {
+        if (isBlank(failureReason)) {
+            return "模型推荐未通过校验，已降级为本地推荐";
+        }
+        return "模型推荐校验失败：" + failureReason + "，已降级为本地推荐";
     }
 
     private boolean containsAllRowConditions(Object conditions, Object requiredConditions) {
@@ -648,5 +681,23 @@ public class AiAssistService {
         public void setGeneratedByAi(boolean generatedByAi) { this.generatedByAi = generatedByAi; }
         public List<String> getWarnings() { return warnings; }
         public void setWarnings(List<String> warnings) { this.warnings = warnings; }
+    }
+
+    private static class RecommendationParseResult {
+        private final Optional<RuleBindingRecommendationResult> result;
+        private final String failureReason;
+
+        private RecommendationParseResult(Optional<RuleBindingRecommendationResult> result, String failureReason) {
+            this.result = result;
+            this.failureReason = failureReason;
+        }
+
+        static RecommendationParseResult success(RuleBindingRecommendationResult result) {
+            return new RecommendationParseResult(Optional.of(result), "");
+        }
+
+        static RecommendationParseResult failure(String failureReason) {
+            return new RecommendationParseResult(Optional.empty(), failureReason);
+        }
     }
 }
