@@ -156,6 +156,35 @@ class TemplateRuleExecutorTest {
     }
 
     @Test
+    void rowExpressionTemplateSupportsConditionalSignedQuantity() {
+        DataTable logs = table("t_inventory_log", "流水ID",
+                row("LOG001", "流水ID", "LOG001", "变动类型", "出库", "变动数量", "1",
+                        "变动前库存", "500", "变动后库存", "499"),
+                row("LOG002", "流水ID", "LOG002", "变动类型", "入库", "变动数量", "100",
+                        "变动前库存", "800", "变动后库存", "900"),
+                row("LOG006", "流水ID", "LOG006", "变动类型", "出库", "变动数量", "1",
+                        "变动前库存", "5000", "变动后库存", "4998"));
+        RuleBinding binding = template("R015", "ROW_EXPRESSION")
+                .param("tableName", "t_inventory_log")
+                .param("conditions", Arrays.asList(
+                        condition(field("变动后库存"), "==",
+                                op("+", field("变动前库存"),
+                                        ifNode(condition(field("变动类型"), "==", literal("入库")),
+                                                field("变动数量"),
+                                                op("-", literal(0), field("变动数量")))))))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R015", "库存变动连续性校验"),
+                tables(logs), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("LOG006");
+        assertThat(findings.get(0).getFieldName()).isEqualTo("变动后库存");
+        assertThat(findings.get(0).getActualValue()).contains("变动后库存=4998", "变动前库存 +");
+        assertThat(findings.get(0).getExpectedValue()).contains("变动后库存 == 变动前库存 +");
+    }
+
+    @Test
     void existsInTableTemplateReportsMissingTargetKey() {
         DataTable items = table("order_item", "明细ID",
                 row("I001", "明细ID", "I001", "商品ID", "P001"),
@@ -352,11 +381,25 @@ class TemplateRuleExecutorTest {
         return expression;
     }
 
+    private Map<String, Object> literal(Object value) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("literal", value);
+        return expression;
+    }
+
     private Map<String, Object> op(String operator, Object left, Object right) {
         Map<String, Object> expression = new LinkedHashMap<>();
         expression.put("op", operator);
         expression.put("left", left);
         expression.put("right", right);
+        return expression;
+    }
+
+    private Map<String, Object> ifNode(Object condition, Object thenNode, Object elseNode) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("if", condition);
+        expression.put("then", thenNode);
+        expression.put("else", elseNode);
         return expression;
     }
 

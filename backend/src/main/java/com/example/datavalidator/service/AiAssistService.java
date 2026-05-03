@@ -268,12 +268,13 @@ public class AiAssistService {
                 + "ROW_EXPRESSION、EXISTS_IN_TABLE、FIELD_EQUALS、AGGREGATION_EQUALS、DUPLICATE_CHECK。"
                 + "字段级模板参数必须包含 tableName 和 fields；FIELD_EXPRESSION 参数必须包含 tableName 和 expression。"
                 + "ROW_EXPRESSION 参数必须包含 tableName 和 conditions；conditions 每项包含 left、operator、right；"
-                + "表达式节点可使用 field、literal/value，或 op + left + right 表达 +、-、*、/。"
+                + "表达式节点可使用 field、literal/value，或 op + left + right 表达 +、-、*、/，"
+                + "也可使用 if + then + else 表达条件分支，if 内包含 left、operator、right。"
                 + "EXISTS_IN_TABLE 参数必须包含 source、target、key；"
                 + "FIELD_EQUALS 参数必须包含 source、target、key、sourceField、targetField；"
                 + "AGGREGATION_EQUALS 参数必须包含 source、target、groupBy、sum、targetField，可选 targetKey；"
                 + "DUPLICATE_CHECK 参数必须包含 tableName 和 groupBy。"
-                + "金额关系、汇总关系、跨表关系必须推荐能表达业务关系的模板，不能降级为单纯类型检查。"
+                + "金额关系、库存连续性、汇总关系、跨表关系必须推荐能表达业务关系的模板，不能降级为单纯类型检查。"
                 + "所有参数只能使用用户提供的表名和字段名。";
     }
 
@@ -452,9 +453,21 @@ public class AiAssistService {
         if (expression.containsKey("value")) {
             return objectString(expression.get("value"));
         }
+        if (expression.containsKey("if")) {
+            Map<?, ?> predicate = objectMapRaw(expression.get("if"));
+            return "if " + rowExpressionText(predicate.get("left")) + " "
+                    + objectString(predicate.get("operator")) + " "
+                    + rowExpressionText(predicate.get("right")) + " then "
+                    + rowExpressionText(expression.get("then")) + " else "
+                    + rowExpressionText(expression.get("else"));
+        }
         return rowExpressionText(expression.get("left")) + " "
                 + objectString(expression.get("op")) + " "
                 + rowExpressionText(expression.get("right"));
+    }
+
+    private Map<?, ?> objectMapRaw(Object value) {
+        return value instanceof Map ? (Map<?, ?>) value : Collections.emptyMap();
     }
 
     private boolean containsAllConditions(String expression, String requiredExpression) {

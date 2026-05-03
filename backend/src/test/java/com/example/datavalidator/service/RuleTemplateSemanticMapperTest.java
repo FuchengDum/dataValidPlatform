@@ -53,6 +53,22 @@ class RuleTemplateSemanticMapperTest {
     }
 
     @Test
+    void mapsSignedInventoryContinuityToRowExpression() {
+        RuleTemplateSemanticMatch match = mapper.recommend(rule("R015", "库存变动连续性校验",
+                "变动后库存 = 变动前库存 + 变动数量(入库为正/出库为负)",
+                "SELECT * FROM t_inventory_log WHERE 变动后库存 != 变动前库存 + "
+                        + "CASE WHEN 变动类型='入库' THEN 变动数量 ELSE -变动数量 END",
+                "t_inventory_log"),
+                tables(table("t_inventory_log", "流水ID", "变动类型", "变动数量", "变动前库存", "变动后库存")));
+
+        assertThat(match.isApplicable()).isTrue();
+        assertThat(match.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(match.getConfidence()).isEqualTo("HIGH");
+        assertThat(match.getTemplateParams()).containsEntry("tableName", "t_inventory_log");
+        assertThat(match.getTemplateParams().get("conditions")).asList().hasSize(1);
+    }
+
+    @Test
     void mapsCrossTableExistenceToExistsInTableTemplate() {
         RuleTemplateSemanticMatch match = mapper.recommend(rule("R010", "明细商品存在性校验",
                 "订单明细商品ID必须存在于商品表", "t_order_item.商品ID exists in t_product.商品ID",

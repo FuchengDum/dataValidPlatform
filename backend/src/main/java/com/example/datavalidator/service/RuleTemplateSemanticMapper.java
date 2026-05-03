@@ -19,6 +19,10 @@ class RuleTemplateSemanticMapper {
         if (match.isApplicable()) {
             return match;
         }
+        match = signedChangeExpression(rule, tableFields, text);
+        if (match.isApplicable()) {
+            return match;
+        }
         match = aggregation(rule, tableFields, text);
         if (match.isApplicable()) {
             return match;
@@ -92,6 +96,34 @@ class RuleTemplateSemanticMapper {
             }
         }
         return RuleTemplateSemanticMatch.unavailable("规则文本未匹配完整字段计算关系。");
+    }
+
+    private RuleTemplateSemanticMatch signedChangeExpression(RuleDefinitionEntity rule,
+                                                             Map<String, List<String>> tableFields,
+                                                             String text) {
+        if (!containsAny(text, "case when", "入库", "出库", "为正", "为负")) {
+            return RuleTemplateSemanticMatch.unavailable("规则文本未匹配条件符号计算关系。");
+        }
+        for (String tableName : applicableTables(rule, tableFields)) {
+            List<String> headers = tableFields.getOrDefault(tableName, Collections.emptyList());
+            String after = fieldContainingAll(headers, text, "后", "库存");
+            String before = fieldContainingAll(headers, text, "前", "库存");
+            String quantity = fieldContaining(headers, text, "数量");
+            String type = fieldContaining(headers, text, "类型");
+            if (ValueParsers.isBlank(after) || ValueParsers.isBlank(before)
+                    || ValueParsers.isBlank(quantity) || ValueParsers.isBlank(type)) {
+                continue;
+            }
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("tableName", tableName);
+            params.put("conditions", Collections.singletonList(
+                    condition(field(after), "==",
+                            op("+", field(before),
+                                    ifNode(condition(field(type), "==", literal("入库")),
+                                            field(quantity), op("-", literal(0), field(quantity)))))));
+            return applicable("ROW_EXPRESSION", params, "基于条件符号计算关系推荐行表达式模板。", "HIGH");
+        }
+        return RuleTemplateSemanticMatch.unavailable("条件符号计算规则缺少可映射字段。");
     }
 
     private RowRelationship rowRelationship(List<String> headers, String text) {
@@ -253,11 +285,25 @@ class RuleTemplateSemanticMapper {
         return expression;
     }
 
+    private Map<String, Object> literal(Object value) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("literal", value);
+        return expression;
+    }
+
     private Map<String, Object> op(String operator, Object left, Object right) {
         Map<String, Object> expression = new LinkedHashMap<>();
         expression.put("op", operator);
         expression.put("left", left);
         expression.put("right", right);
+        return expression;
+    }
+
+    private Map<String, Object> ifNode(Object predicate, Object thenNode, Object elseNode) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("if", predicate);
+        expression.put("then", thenNode);
+        expression.put("else", elseNode);
         return expression;
     }
 
@@ -330,6 +376,25 @@ class RuleTemplateSemanticMapper {
                 if (field.contains(keyword)) {
                     return field;
                 }
+            }
+        }
+        return "";
+    }
+
+    private String fieldContainingAll(List<String> fields, String text, String... keywords) {
+        for (String field : fields) {
+            if (!text.contains(field)) {
+                continue;
+            }
+            boolean matched = true;
+            for (String keyword : keywords) {
+                if (!field.contains(keyword)) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) {
+                return field;
             }
         }
         return "";

@@ -325,6 +325,46 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingFallsBackToRowExpressionWhenModelWeakensR015() {
+        AiAssistService service = inventoryRecommendationService(Optional.of("{\"templateCode\":\"NUMERIC_TYPE\","
+                + "\"templateParams\":{\"tableName\":\"t_inventory_log\","
+                + "\"fields\":[\"变动类型\",\"变动数量\",\"变动前库存\",\"变动后库存\"]},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐字段类型检查\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R015"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams()).containsEntry("tableName", "t_inventory_log");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(1);
+        assertThat(result.getWarnings().get(0)).contains("模型推荐校验失败")
+                .contains("模型推荐模板弱化了本地高置信语义映射");
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsConditionalRowExpressionForR015() {
+        AiAssistService service = inventoryRecommendationService(Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_inventory_log\","
+                + "\"conditions\":[{\"left\":{\"field\":\"变动后库存\"},\"operator\":\"==\","
+                + "\"right\":{\"op\":\"+\",\"left\":{\"field\":\"变动前库存\"},"
+                + "\"right\":{\"if\":{\"left\":{\"field\":\"变动类型\"},\"operator\":\"==\","
+                + "\"right\":{\"literal\":\"入库\"}},\"then\":{\"field\":\"变动数量\"},"
+                + "\"else\":{\"op\":\"-\",\"left\":{\"literal\":0},\"right\":{\"field\":\"变动数量\"}}}}}]},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐库存连续性行表达式\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R015"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(1);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
     void recommendRuleBindingFallsBackWhenModelExpressionIsNotExecutable() {
         AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
                 + "\"templateParams\":{\"tableName\":\"t_order\","
@@ -446,6 +486,22 @@ class AiAssistServiceTest {
                 table("ds-1", "t_product", "商品ID", "商品名称"),
                 table("ds-1", "t_payment", "支付ID", "订单ID", "用户ID", "支付状态"),
                 table("ds-1", "t_order", "订单ID", "用户ID", "订单金额")));
+        return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
+                new ObjectMapper(), ruleRepository, tableRepository);
+    }
+
+    private AiAssistService inventoryRecommendationService(Optional<String> modelResponse) {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        RuleDefinitionEntity rule = rule("ds-1", "R015", "库存变动连续性校验", "");
+        rule.setCategory("SINGLE_TABLE_BUSINESS_RULE");
+        rule.setApplicableTables("t_inventory_log");
+        rule.setDescription("变动后库存 = 变动前库存 + 变动数量(入库为正/出库为负)");
+        rule.setPseudoLogic("SELECT * FROM t_inventory_log WHERE 变动后库存 != 变动前库存 + "
+                + "CASE WHEN 变动类型='入库' THEN 变动数量 ELSE -变动数量 END");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("R015", "ds-1"))).thenReturn(Optional.of(rule));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_inventory_log", "流水ID", "变动类型", "变动数量", "变动前库存", "变动后库存")));
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
                 new ObjectMapper(), ruleRepository, tableRepository);
     }

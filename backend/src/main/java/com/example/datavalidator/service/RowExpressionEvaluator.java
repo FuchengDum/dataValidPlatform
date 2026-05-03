@@ -79,6 +79,12 @@ class RowExpressionEvaluator {
             throw new BadRequestException("行表达式节点格式不支持");
         }
         Map<String, Object> node = (Map<String, Object>) rawNode;
+        if (node.containsKey("if")) {
+            validatePredicate(node.get("if"), headers);
+            validateNode(node.get("then"), headers);
+            validateNode(node.get("else"), headers);
+            return;
+        }
         String field = stringValue(node.get("field"));
         if (!ValueParsers.isBlank(field)) {
             if (!headers.contains(field)) {
@@ -98,6 +104,20 @@ class RowExpressionEvaluator {
     }
 
     @SuppressWarnings("unchecked")
+    private static void validatePredicate(Object rawPredicate, List<String> headers) {
+        if (!(rawPredicate instanceof Map)) {
+            throw new BadRequestException("行表达式 if 条件格式不支持");
+        }
+        Map<String, Object> predicate = (Map<String, Object>) rawPredicate;
+        String operator = stringValue(predicate.get("operator"));
+        if (!COMPARISON_OPERATORS.contains(operator)) {
+            throw new BadRequestException("不支持的行表达式 if 操作符: " + operator);
+        }
+        validateNode(predicate.get("left"), headers);
+        validateNode(predicate.get("right"), headers);
+    }
+
+    @SuppressWarnings("unchecked")
     private static ExpressionValue evaluateNode(Object rawNode, DataRow row) {
         if (rawNode instanceof Number || rawNode instanceof String) {
             String value = stringValue(rawNode);
@@ -107,6 +127,9 @@ class RowExpressionEvaluator {
             return ExpressionValue.unavailable("未知表达式");
         }
         Map<String, Object> node = (Map<String, Object>) rawNode;
+        if (node.containsKey("if")) {
+            return evaluateConditionalNode(node, row);
+        }
         String field = stringValue(node.get("field"));
         if (!ValueParsers.isBlank(field)) {
             String value = row.value(field);
@@ -124,6 +147,51 @@ class RowExpressionEvaluator {
         Optional<BigDecimal> calculated = calculate(left, operator, right);
         return new ExpressionValue(text, calculated.map(RowExpressionEvaluator::formatDecimal).orElse("无法计算"),
                 calculated, left.firstField());
+    }
+
+    private static ExpressionValue evaluateConditionalNode(Map<String, Object> node, DataRow row) {
+        Result predicate = evaluateCondition(asMap(node.get("if")), row);
+        ExpressionValue selected = evaluateNode(predicate.isSatisfied() ? node.get("then") : node.get("else"), row);
+        String text = "if " + predicate.getFailedCondition() + " then "
+                + expressionText(node.get("then")) + " else " + expressionText(node.get("else"));
+        return new ExpressionValue(text, selected.rawValue, selected.decimal, selected.firstField());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asMap(Object value) {
+        if (value instanceof Map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            ((Map<?, ?>) value).forEach((key, item) -> result.put(String.valueOf(key), item));
+            return result;
+        }
+        return Collections.emptyMap();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String expressionText(Object rawNode) {
+        if (rawNode instanceof Number || rawNode instanceof String) {
+            return stringValue(rawNode);
+        }
+        if (!(rawNode instanceof Map)) {
+            return "未知表达式";
+        }
+        Map<String, Object> node = (Map<String, Object>) rawNode;
+        String field = stringValue(node.get("field"));
+        if (!ValueParsers.isBlank(field)) {
+            return field;
+        }
+        if (node.containsKey("literal") || node.containsKey("value")) {
+            Object literal = node.containsKey("literal") ? node.get("literal") : node.get("value");
+            return stringValue(literal);
+        }
+        if (node.containsKey("if")) {
+            return "if " + expressionText(asMap(node.get("if")).get("left")) + " "
+                    + stringValue(asMap(node.get("if")).get("operator")) + " "
+                    + expressionText(asMap(node.get("if")).get("right")) + " then "
+                    + expressionText(node.get("then")) + " else " + expressionText(node.get("else"));
+        }
+        return expressionText(node.get("left")) + " " + stringValue(node.get("op")) + " "
+                + expressionText(node.get("right"));
     }
 
     private static Optional<BigDecimal> calculate(ExpressionValue left, String operator, ExpressionValue right) {
