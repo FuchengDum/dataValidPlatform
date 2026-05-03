@@ -161,6 +161,48 @@ class RuleBindingServiceTest {
     }
 
     @Test
+    void updateBindingRejectsFieldEqualsWhenKeyMissingInTargetTable() {
+        RuleDefinitionEntity rule = rule("ds-1", "C007", "跨表字段一致");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C007", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C007")).thenReturn(Optional.empty());
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "payment", "订单ID", "用户ID"),
+                table("ds-1", "order", "用户ID")));
+        RuleBindingService.BindingRequest request = request("FIELD_EQUALS")
+                .param("source", "payment")
+                .param("target", "order")
+                .param("key", "订单ID")
+                .param("sourceField", "用户ID")
+                .param("targetField", "用户ID")
+                .build();
+
+        assertThatThrownBy(() -> service.updateBinding("ds-1", "C007", request))
+                .isInstanceOf(com.example.datavalidator.exception.BadRequestException.class)
+                .hasMessageContaining("字段不存在");
+    }
+
+    @Test
+    void updateBindingRejectsAggregationWhenTargetKeyMissingInTargetTable() {
+        RuleDefinitionEntity rule = rule("ds-1", "C008", "聚合一致");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C008", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C008")).thenReturn(Optional.empty());
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "order_item", "订单ID", "小计金额"),
+                table("ds-1", "order", "订单编号", "订单金额")));
+        RuleBindingService.BindingRequest request = request("AGGREGATION_EQUALS")
+                .param("source", "order_item")
+                .param("target", "order")
+                .param("groupBy", "订单ID")
+                .param("sum", "小计金额")
+                .param("targetField", "订单金额")
+                .build();
+
+        assertThatThrownBy(() -> service.updateBinding("ds-1", "C008", request))
+                .isInstanceOf(com.example.datavalidator.exception.BadRequestException.class)
+                .hasMessageContaining("字段不存在");
+    }
+
+    @Test
     void updateBindingRejectsExpressionTemplateWithUnknownField() {
         RuleDefinitionEntity rule = rule("ds-1", "C004", "表达式校验");
         when(ruleRepository.findById(new RuleDefinitionEntity.Key("C004", "ds-1"))).thenReturn(Optional.of(rule));

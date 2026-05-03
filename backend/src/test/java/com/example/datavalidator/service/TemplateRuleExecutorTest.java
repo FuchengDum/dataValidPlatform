@@ -128,7 +128,9 @@ class TemplateRuleExecutorTest {
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getTableName()).isEqualTo("order_item");
         assertThat(findings.get(0).getRecordKey()).isEqualTo("I002");
-        assertThat(findings.get(0).getExpectedValue()).contains("product");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("order_item.商品ID=P404");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("product.商品ID 中存在对应记录");
+        assertThat(findings.get(0).getDescription()).isEqualTo("关联记录不存在");
     }
 
     @Test
@@ -151,8 +153,9 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("P002");
-        assertThat(findings.get(0).getActualValue()).isEqualTo("U999");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("U002");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("payment.用户ID=U999；order.用户ID=U002");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("用户ID == order.用户ID");
+        assertThat(findings.get(0).getDescription()).isEqualTo("关联字段值不一致");
     }
 
     @Test
@@ -176,8 +179,9 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("O002");
-        assertThat(findings.get(0).getActualValue()).isEqualTo("10");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("8");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("订单金额=10；order_item.小计金额 汇总=8");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("订单金额 == order_item.小计金额 汇总值");
+        assertThat(findings.get(0).getDescription()).isEqualTo("聚合结果不一致");
     }
 
     @Test
@@ -199,7 +203,9 @@ class TemplateRuleExecutorTest {
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getTableName()).isEqualTo("order_item");
         assertThat(findings.get(0).getRecordKey()).isEqualTo("I001");
-        assertThat(findings.get(0).getExpectedValue()).contains("order");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("order_item.订单ID=O404；小计金额 汇总=10");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("order.订单ID 中存在聚合目标记录");
+        assertThat(findings.get(0).getDescription()).isEqualTo("聚合目标记录不存在");
     }
 
     @Test
@@ -217,6 +223,9 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(2);
         assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("P001", "P002");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("订单ID=O001；支付状态=支付成功");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("唯一组合");
+        assertThat(findings.get(0).getDescription()).isEqualTo("存在重复记录");
     }
 
     private RuleDefinition rule(String ruleId, String ruleName) {

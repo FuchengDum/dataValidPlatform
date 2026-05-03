@@ -35,15 +35,15 @@ public class AiAssistService {
     private static final Pattern SQL_COMMENT_PATTERN = Pattern.compile("(?s)(--|/\\*|\\*/)");
     private static final String SOURCE_LOCAL = "LOCAL_RULE_BASED";
     private static final String SOURCE_AI = "OPENAI_COMPATIBLE";
-    private static final String R006_AMOUNT_BALANCE = "实付金额 == 订单金额 - 优惠金额";
-    private static final String R006_AMOUNT_LIMIT = "实付金额 <= 订单金额";
     private static final List<String> SUPPORTED_RECOMMENDATION_TEMPLATES = Arrays.asList(
-            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION");
+            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION",
+            "EXISTS_IN_TABLE", "FIELD_EQUALS", "AGGREGATION_EQUALS", "DUPLICATE_CHECK");
 
     private final AiChatClient aiChatClient;
     private final ObjectMapper objectMapper;
     private final RuleDefinitionRepository ruleRepository;
     private final DataTableSnapshotRepository tableRepository;
+    private final RuleTemplateSemanticMapper semanticMapper = new RuleTemplateSemanticMapper();
 
     @Autowired
     public AiAssistService(AiChatClient aiChatClient,
@@ -103,14 +103,15 @@ public class AiAssistService {
                         new RuleDefinitionEntity.Key(request.getRuleId(), request.getDatasetId()))
                 .orElseThrow(() -> new BadRequestException("规则不存在: " + request.getRuleId()));
         Map<String, List<String>> tableFields = loadTableFields(request.getDatasetId());
-        RuleBindingRecommendationResult local = localRecommendation(rule, tableFields);
+        RuleTemplateSemanticMatch localMatch = semanticMapper.recommend(rule, tableFields);
+        RuleBindingRecommendationResult local = localRecommendation(localMatch);
         Optional<String> modelResponse = aiChatClient
                 .complete(recommendationSystemPrompt(), recommendationUserPrompt(rule, tableFields));
         if (modelResponse.isEmpty()) {
             return local;
         }
         Optional<RuleBindingRecommendationResult> generated = modelResponse
-                .flatMap(content -> parseRecommendationResult(content, tableFields, rule));
+                .flatMap(content -> parseRecommendationResult(content, tableFields, localMatch));
         if (generated.isPresent()) {
             return generated.get();
         }
@@ -148,41 +149,31 @@ public class AiAssistService {
         return result;
     }
 
-    private RuleBindingRecommendationResult localRecommendation(RuleDefinitionEntity rule,
-                                                                Map<String, List<String>> tableFields) {
+    private RuleBindingRecommendationResult localRecommendation(RuleTemplateSemanticMatch match) {
         RuleBindingRecommendationResult result = new RuleBindingRecommendationResult();
         result.setSource(SOURCE_LOCAL);
         result.setGeneratedByAi(false);
         result.setRequiresHumanReview(true);
-        result.setConfidence("MEDIUM");
-        String tableName = firstApplicableTable(rule, tableFields);
-        Map<String, Object> params = new LinkedHashMap<>();
-        if ("R006".equals(rule.getRuleId())
-                && hasFields(tableFields.get(tableName), "订单金额", "优惠金额", "实付金额")) {
-            result.setTemplateCode("FIELD_EXPRESSION");
-            result.setConfidence("HIGH");
-            params.put("tableName", tableName);
-            params.put("expression", R006_AMOUNT_BALANCE + " && " + R006_AMOUNT_LIMIT);
-            result.setExplanation("基于 R006 内置规则语义生成字段表达式模板，请人工确认后应用。");
-        } else {
-            result.setTemplateCode(resolveLocalTemplateCode(rule));
-            params.put("tableName", tableName);
-            params.put("fields", localFields(rule, tableFields.getOrDefault(tableName, Collections.emptyList())));
-            result.setExplanation("基于规则文本、默认模板编码和数据集字段生成的本地推荐，请人工确认后应用。");
+        result.setConfidence(match.getConfidence());
+        result.setTemplateCode(match.getTemplateCode());
+        result.setTemplateParams(match.getTemplateParams());
+        result.setExplanation(match.getMatchedReason());
+        result.getWarnings().addAll(match.getWarnings());
+        if (!match.isApplicable()) {
+            result.setExplanation("当前规则无法自动映射到可执行模板，建议继续使用内置执行器。");
         }
-        result.setTemplateParams(params);
         return result;
     }
 
     private Optional<RuleBindingRecommendationResult> parseRecommendationResult(
-            String content, Map<String, List<String>> tableFields, RuleDefinitionEntity rule) {
+            String content, Map<String, List<String>> tableFields, RuleTemplateSemanticMatch localMatch) {
         try {
             Map<String, Object> values = objectMapper.readValue(stripCodeFence(content),
                     new TypeReference<Map<String, Object>>() {});
             RuleBindingRecommendationResult result = new RuleBindingRecommendationResult();
             result.setTemplateCode(stringValue(values, "templateCode"));
             result.setTemplateParams(objectMap(values.get("templateParams")));
-            if (!isValidRecommendation(result, tableFields, rule)) {
+            if (validationFailure(result, tableFields, localMatch).isPresent()) {
                 return Optional.empty();
             }
             result.setSource(SOURCE_AI);
@@ -270,9 +261,14 @@ public class AiAssistService {
 
     private String recommendationSystemPrompt() {
         return "你是业务规则模板推荐助手。只允许输出 JSON，字段为 templateCode、templateParams、confidence、explanation。"
-                + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE、FIELD_EXPRESSION。"
+                + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE、FIELD_EXPRESSION、"
+                + "EXISTS_IN_TABLE、FIELD_EQUALS、AGGREGATION_EQUALS、DUPLICATE_CHECK。"
                 + "字段级模板参数必须包含 tableName 和 fields；FIELD_EXPRESSION 参数必须包含 tableName 和 expression。"
-                + "R006 这类金额关系规则必须推荐 FIELD_EXPRESSION，不能推荐 NUMERIC_TYPE。"
+                + "EXISTS_IN_TABLE 参数必须包含 source、target、key；"
+                + "FIELD_EQUALS 参数必须包含 source、target、key、sourceField、targetField；"
+                + "AGGREGATION_EQUALS 参数必须包含 source、target、groupBy、sum、targetField，可选 targetKey；"
+                + "DUPLICATE_CHECK 参数必须包含 tableName 和 groupBy。"
+                + "金额关系、汇总关系、跨表关系必须推荐能表达业务关系的模板，不能降级为单纯类型检查。"
                 + "所有参数只能使用用户提供的表名和字段名。";
     }
 
@@ -347,115 +343,50 @@ public class AiAssistService {
         }
     }
 
-    private String resolveLocalTemplateCode(RuleDefinitionEntity rule) {
-        if (SUPPORTED_RECOMMENDATION_TEMPLATES.contains(rule.getTemplateCode())) {
-            return rule.getTemplateCode();
-        }
-        String text = (safe(rule.getRuleName()) + " " + safe(rule.getDescription()) + " "
-                + safe(rule.getPseudoLogic())).toLowerCase(Locale.ROOT);
-        if (text.contains("非空") || text.contains("not null")) {
-            return "NOT_NULL";
-        }
-        if (text.contains("类型") || text.contains("数值") || text.contains("numeric")) {
-            return "NUMERIC_TYPE";
-        }
-        return "NON_NEGATIVE";
-    }
-
-    private String firstApplicableTable(RuleDefinitionEntity rule, Map<String, List<String>> tableFields) {
-        for (String item : safe(rule.getApplicableTables()).split("[,，/、\\s]+")) {
-            if (tableFields.containsKey(item)) {
-                return item;
-            }
-        }
-        return tableFields.keySet().stream().findFirst().orElse("");
-    }
-
-    private List<String> localFields(RuleDefinitionEntity rule, List<String> headers) {
-        String text = safe(rule.getRuleName()) + " " + safe(rule.getDescription()) + " " + safe(rule.getPseudoLogic());
-        List<String> fields = new ArrayList<>();
-        for (String header : headers) {
-            if (!isBlank(header) && text.contains(header)) {
-                fields.add(header);
-            }
-        }
-        if (fields.isEmpty() && !headers.isEmpty()) {
-            fields.add(headers.get(0));
-        }
-        return fields;
-    }
-
-    private boolean isValidRecommendation(RuleBindingRecommendationResult result,
-                                          Map<String, List<String>> tableFields,
-                                          RuleDefinitionEntity rule) {
+    private Optional<String> validationFailure(RuleBindingRecommendationResult result,
+                                               Map<String, List<String>> tableFields,
+                                               RuleTemplateSemanticMatch localMatch) {
         if (!SUPPORTED_RECOMMENDATION_TEMPLATES.contains(result.getTemplateCode())) {
-            return false;
+            return Optional.of("模板不在可推荐白名单中: " + result.getTemplateCode());
         }
-        String tableName = objectString(result.getTemplateParams().get("tableName"));
-        if (!tableFields.containsKey(tableName)) {
-            return false;
+        try {
+            TemplateBindingValidator.validate(result.getTemplateCode(), result.getTemplateParams(), tableFields);
+        } catch (BadRequestException ex) {
+            return Optional.of(ex.getMessage());
         }
-        if ("FIELD_EXPRESSION".equals(result.getTemplateCode())) {
+        if (localMatch.isApplicable() && "HIGH".equals(localMatch.getConfidence())
+                && !localMatch.getTemplateCode().equals(result.getTemplateCode())) {
+            return Optional.of("模型推荐模板弱化了本地高置信语义映射");
+        }
+        if (localMatch.isApplicable() && "FIELD_EXPRESSION".equals(localMatch.getTemplateCode())
+                && "FIELD_EXPRESSION".equals(result.getTemplateCode())) {
+            String required = objectString(localMatch.getTemplateParams().get("expression"));
             String expression = objectString(result.getTemplateParams().get("expression"));
-            return isValidFieldExpression(expression, tableFields.getOrDefault(tableName, Collections.emptyList()))
-                    && isValidRuleSpecificExpression(rule, expression);
-        }
-        if ("R006".equals(rule.getRuleId())) {
-            return false;
-        }
-        List<String> fields = objectStringList(result.getTemplateParams().get("fields"));
-        if (fields.isEmpty()) {
-            return false;
-        }
-        List<String> headers = tableFields.getOrDefault(tableName, Collections.emptyList());
-        return headers.containsAll(fields);
-    }
-
-    private boolean isValidFieldExpression(String expression, List<String> headers) {
-        if (isBlank(expression)) {
-            return false;
-        }
-        boolean hasField = false;
-        for (String token : expression.split("\\s+")) {
-            if (isExpressionOperator(token) || ValueParsers.decimal(token).isPresent()) {
-                continue;
+            if (!containsAllConditions(expression, required)) {
+                return Optional.of("模型表达式未覆盖本地语义映射条件");
             }
-            if (!headers.contains(token)) {
-                return false;
-            }
-            hasField = true;
         }
-        return hasField && TemplateExpressionEvaluator.isValidExpression(expression, headers);
+        return Optional.empty();
     }
 
-    private boolean isValidRuleSpecificExpression(RuleDefinitionEntity rule, String expression) {
-        if (!"R006".equals(rule.getRuleId())) {
-            return true;
-        }
-        List<String> conditions = new ArrayList<>();
-        for (String condition : expression.split("\\s+&&\\s+")) {
-            conditions.add(condition.trim().replaceAll("\\s+", " "));
-        }
-        return conditions.contains(R006_AMOUNT_BALANCE) && conditions.contains(R006_AMOUNT_LIMIT);
-    }
-
-    private boolean isExpressionOperator(String token) {
-        return "==".equals(token) || "=".equals(token) || "!=".equals(token)
-                || ">=".equals(token) || "<=".equals(token) || ">".equals(token)
-                || "<".equals(token) || "+".equals(token) || "-".equals(token)
-                || "*".equals(token) || "/".equals(token) || "&&".equals(token);
-    }
-
-    private boolean hasFields(List<String> headers, String... fields) {
-        if (headers == null) {
-            return false;
-        }
-        for (String field : fields) {
-            if (!headers.contains(field)) {
+    private boolean containsAllConditions(String expression, String requiredExpression) {
+        List<String> conditions = normalizedConditions(expression);
+        for (String required : normalizedConditions(requiredExpression)) {
+            if (!conditions.contains(required)) {
                 return false;
             }
         }
         return true;
+    }
+
+    private List<String> normalizedConditions(String expression) {
+        List<String> conditions = new ArrayList<>();
+        for (String condition : safe(expression).split("\\s+&&\\s+")) {
+            if (!isBlank(condition)) {
+                conditions.add(condition.trim().replaceAll("\\s+", " "));
+            }
+        }
+        return conditions;
     }
 
     private Map<String, Object> objectMap(Object value) {
@@ -464,17 +395,6 @@ public class AiAssistService {
         }
         Map<String, Object> result = new LinkedHashMap<>();
         ((Map<?, ?>) value).forEach((key, item) -> result.put(String.valueOf(key), item));
-        return result;
-    }
-
-    private List<String> objectStringList(Object value) {
-        if (!(value instanceof List)) {
-            return Collections.emptyList();
-        }
-        List<String> result = new ArrayList<>();
-        for (Object item : (List<?>) value) {
-            result.add(objectString(item));
-        }
         return result;
     }
 

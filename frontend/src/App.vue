@@ -112,6 +112,31 @@
               </div>
               <p class="param-summary">{{ summarizeParams(recommendations[rule.ruleId].templateParams) }}</p>
               <p class="recommendation-text">{{ recommendations[rule.ruleId].explanation }}</p>
+              <div class="recommendation-compare">
+                <div class="binding-preview">
+                  <strong>当前绑定</strong>
+                  <span>{{ labelExecutor(rule.executorType) }} · {{ rule.templateCode || '内置执行器' }}</span>
+                  <div
+                    v-for="item in paramEntries(rule.templateParams)"
+                    :key="`current-${rule.ruleId}-${item.key}`"
+                    class="param-row">
+                    <b>{{ item.key }}</b>
+                    <span>{{ item.value }}</span>
+                  </div>
+                  <p v-if="paramEntries(rule.templateParams).length === 0" class="param-empty">无模板参数</p>
+                </div>
+                <div class="binding-preview">
+                  <strong>推荐绑定</strong>
+                  <span>TEMPLATE · {{ recommendations[rule.ruleId].templateCode }}</span>
+                  <div
+                    v-for="item in paramEntries(recommendations[rule.ruleId].templateParams)"
+                    :key="`recommended-${rule.ruleId}-${item.key}`"
+                    class="param-row">
+                    <b>{{ item.key }}</b>
+                    <span>{{ item.value }}</span>
+                  </div>
+                </div>
+              </div>
               <p
                 v-for="warning in recommendations[rule.ruleId].warnings"
                 :key="warning"
@@ -400,6 +425,23 @@ function summarizeParams(params = {}) {
   return Object.entries(params)
     .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join('/') : value}`)
     .join(', ')
+}
+
+function paramEntries(params = {}) {
+  return Object.entries(params || {}).map(([key, value]) => ({
+    key,
+    value: stringifyParam(value)
+  }))
+}
+
+function stringifyParam(value) {
+  if (Array.isArray(value)) {
+    return value.join(' / ')
+  }
+  if (value && typeof value === 'object') {
+    return JSON.stringify(value)
+  }
+  return value ?? ''
 }
 
 function clearRecommendations() {

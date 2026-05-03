@@ -159,7 +159,7 @@ class AiAssistServiceTest {
     }
 
     @Test
-    void recommendRuleBindingFallsBackWhenModelUsesUnsupportedTemplate() {
+    void recommendRuleBindingFallsBackWhenModelUsesInvalidCrossTableTemplate() {
         AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EQUALS\","
                 + "\"templateParams\":{\"source\":\"t_order\",\"target\":\"t_payment\"},"
                 + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐跨表一致\"}"));
@@ -171,6 +171,83 @@ class AiAssistServiceTest {
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
         assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
         assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsValidExistsInTableModelRecommendation() {
+        AiAssistService service = multiTableRecommendationService("R010", "明细商品存在性校验",
+                "订单明细商品ID必须存在于商品表",
+                "t_order_item.商品ID exists in t_product.商品ID",
+                Optional.of("{\"templateCode\":\"EXISTS_IN_TABLE\","
+                        + "\"templateParams\":{\"source\":\"t_order_item\",\"target\":\"t_product\","
+                        + "\"key\":\"商品ID\"},"
+                        + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐跨表存在性\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R010"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getTemplateCode()).isEqualTo("EXISTS_IN_TABLE");
+        assertThat(result.getTemplateParams()).containsEntry("source", "t_order_item");
+        assertThat(result.getTemplateParams()).containsEntry("target", "t_product");
+        assertThat(result.getTemplateParams()).containsEntry("key", "商品ID");
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsValidFieldEqualsModelRecommendation() {
+        AiAssistService service = multiTableRecommendationService("R011", "支付用户与订单用户一致",
+                "支付表用户ID应与订单表用户ID一致",
+                "t_payment.用户ID = t_order.用户ID by 订单ID",
+                Optional.of("{\"templateCode\":\"FIELD_EQUALS\","
+                        + "\"templateParams\":{\"source\":\"t_payment\",\"target\":\"t_order\","
+                        + "\"key\":\"订单ID\",\"sourceField\":\"用户ID\",\"targetField\":\"用户ID\"},"
+                        + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐跨表字段一致\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R011"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EQUALS");
+        assertThat(result.getTemplateParams()).containsEntry("key", "订单ID");
+        assertThat(result.getTemplateParams()).containsEntry("sourceField", "用户ID");
+        assertThat(result.getTemplateParams()).containsEntry("targetField", "用户ID");
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsValidAggregationModelRecommendation() {
+        AiAssistService service = multiTableRecommendationService("R012", "订单金额汇总一致",
+                "订单金额应等于订单明细小计金额之和",
+                "sum(t_order_item.小计金额) by 订单ID = t_order.订单金额",
+                Optional.of("{\"templateCode\":\"AGGREGATION_EQUALS\","
+                        + "\"templateParams\":{\"source\":\"t_order_item\",\"target\":\"t_order\","
+                        + "\"groupBy\":\"订单ID\",\"sum\":\"小计金额\",\"targetField\":\"订单金额\"},"
+                        + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐聚合一致\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R012"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getTemplateCode()).isEqualTo("AGGREGATION_EQUALS");
+        assertThat(result.getTemplateParams()).containsEntry("sum", "小计金额");
+        assertThat(result.getTemplateParams()).containsEntry("targetField", "订单金额");
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsValidDuplicateCheckModelRecommendation() {
+        AiAssistService service = multiTableRecommendationService("R013", "重复支付检查",
+                "同一订单ID和支付状态不得重复",
+                "unique(订单ID, 支付状态)",
+                Optional.of("{\"templateCode\":\"DUPLICATE_CHECK\","
+                        + "\"templateParams\":{\"tableName\":\"t_payment\","
+                        + "\"groupBy\":[\"订单ID\",\"支付状态\"]},"
+                        + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐重复检查\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R013"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getTemplateCode()).isEqualTo("DUPLICATE_CHECK");
+        assertThat(result.getTemplateParams().get("groupBy")).asList().containsExactly("订单ID", "支付状态");
     }
 
     @Test
@@ -330,6 +407,26 @@ class AiAssistServiceTest {
         when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
                 table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "下单时间",
                         "收货地址", "订单金额", "优惠金额", "实付金额")));
+        return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
+                new ObjectMapper(), ruleRepository, tableRepository);
+    }
+
+    private AiAssistService multiTableRecommendationService(String ruleId, String ruleName,
+                                                            String description, String pseudoLogic,
+                                                            Optional<String> modelResponse) {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        RuleDefinitionEntity rule = rule("ds-1", ruleId, ruleName, "");
+        rule.setCategory("CROSS_TABLE_BUSINESS_RULE");
+        rule.setDescription(description);
+        rule.setPseudoLogic(pseudoLogic);
+        rule.setApplicableTables("t_order_item,t_product,t_payment,t_order");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key(ruleId, "ds-1"))).thenReturn(Optional.of(rule));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order_item", "明细ID", "订单ID", "商品ID", "小计金额"),
+                table("ds-1", "t_product", "商品ID", "商品名称"),
+                table("ds-1", "t_payment", "支付ID", "订单ID", "用户ID", "支付状态"),
+                table("ds-1", "t_order", "订单ID", "用户ID", "订单金额")));
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
                 new ObjectMapper(), ruleRepository, tableRepository);
     }

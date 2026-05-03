@@ -14,7 +14,11 @@ class TemplateBindingValidator {
 
     static void validate(String templateCode, Map<String, Object> params,
                          List<DataTableSnapshotEntity> tables, JsonService jsonService) {
-        Map<String, List<String>> headersByTable = headersByTable(tables, jsonService);
+        validate(templateCode, params, headersByTable(tables, jsonService));
+    }
+
+    static void validate(String templateCode, Map<String, Object> params,
+                         Map<String, List<String>> headersByTable) {
         switch (templateCode) {
             case "NOT_NULL":
             case "NON_NEGATIVE":

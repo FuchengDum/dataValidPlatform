@@ -130,9 +130,9 @@ public class TemplateRuleExecutor {
         for (DataRow row : source.getRows()) {
             String actual = row.value(key);
             if (!ValueParsers.isBlank(actual) && !targetKeys.contains(actual)) {
-                findings.add(finding(rule, source, row, key, actual,
-                        target.getLogicalName() + "." + key,
-                        key + " 必须存在于 " + target.getLogicalName(), "RELATION"));
+                findings.add(finding(rule, source, row, key, source.getLogicalName() + "." + key + "=" + actual,
+                        target.getLogicalName() + "." + key + " 中存在对应记录",
+                        "关联记录不存在", "RELATION"));
             }
         }
         return findings;
@@ -162,8 +162,11 @@ public class TemplateRuleExecutor {
             }
             String expected = targetRow.value(targetField);
             if (!actual.equals(expected)) {
-                findings.add(finding(rule, source, row, sourceField, actual, expected,
-                        sourceField + " 必须等于 " + target.getLogicalName() + "." + targetField, "RELATION"));
+                findings.add(finding(rule, source, row, sourceField,
+                        source.getLogicalName() + "." + sourceField + "=" + actual
+                                + "；" + target.getLogicalName() + "." + targetField + "=" + expected,
+                        sourceField + " == " + target.getLogicalName() + "." + targetField,
+                        "关联字段值不一致", "RELATION"));
             }
         }
         return findings;
@@ -201,9 +204,11 @@ public class TemplateRuleExecutor {
             BigDecimal expected = totals.get(groupValue);
             Optional<BigDecimal> actual = ValueParsers.decimal(row.value(targetField));
             if (expected != null && (!actual.isPresent() || actual.get().compareTo(expected) != 0)) {
-                findings.add(finding(rule, target, row, targetField, row.value(targetField),
-                        formatDecimal(expected),
-                        targetField + " 必须等于 " + source.getLogicalName() + "." + sumField + " 汇总值",
+                findings.add(finding(rule, target, row, targetField,
+                        targetField + "=" + row.value(targetField) + "；"
+                                + source.getLogicalName() + "." + sumField + " 汇总=" + formatDecimal(expected),
+                        targetField + " == " + source.getLogicalName() + "." + sumField + " 汇总值",
+                        "聚合结果不一致",
                         "CALCULATION"));
             }
             if (expected != null) {
@@ -213,9 +218,11 @@ public class TemplateRuleExecutor {
         for (Map.Entry<String, BigDecimal> entry : totals.entrySet()) {
             if (!matchedGroups.contains(entry.getKey())) {
                 DataRow sourceRow = sourceRowsByGroup.get(entry.getKey());
-                findings.add(finding(rule, source, sourceRow, groupBy, entry.getKey(),
-                        target.getLogicalName() + "." + targetKey,
-                        groupBy + " 未找到聚合目标记录", "RELATION"));
+                findings.add(finding(rule, source, sourceRow, groupBy,
+                        source.getLogicalName() + "." + groupBy + "=" + entry.getKey()
+                                + "；" + sumField + " 汇总=" + formatDecimal(entry.getValue()),
+                        target.getLogicalName() + "." + targetKey + " 中存在聚合目标记录",
+                        "聚合目标记录不存在", "RELATION"));
             }
         }
         return findings;
@@ -234,7 +241,8 @@ public class TemplateRuleExecutor {
             if (rows.size() > 1) {
                 for (DataRow row : rows) {
                     findings.add(finding(rule, table, row, groupBy.get(0),
-                            groupBy.stream().map(row::value).collect(Collectors.joining(", ")),
+                            groupBy.stream().map(field -> field + "=" + row.value(field))
+                                    .collect(Collectors.joining("；")),
                             "唯一组合", "存在重复记录", "DUPLICATE"));
                 }
             }

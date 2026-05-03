@@ -269,6 +269,52 @@ input {
   line-height: 1.4;
 }
 
+.recommendation-compare {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.binding-preview {
+  padding: 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.binding-preview strong {
+  display: block;
+  color: #334155;
+  margin-bottom: 3px;
+}
+
+.binding-preview > span,
+.param-empty {
+  display: block;
+  color: #64748b;
+  margin: 0 0 5px;
+}
+
+.param-row {
+  display: grid;
+  grid-template-columns: minmax(64px, 88px) minmax(0, 1fr);
+  gap: 6px;
+  padding: 3px 0;
+  border-top: 1px solid #f1f5f9;
+}
+
+.param-row b {
+  color: #475569;
+  font-weight: 600;
+}
+
+.param-row span {
+  color: #0f172a;
+  word-break: break-word;
+}
+
 .assist-box pre {
   margin: 0;
   max-height: 180px;
