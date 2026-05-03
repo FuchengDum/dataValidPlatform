@@ -174,6 +174,42 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingFallsBackToFieldExpressionWhenModelWeakensR006() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"NUMERIC_TYPE\","
+                + "\"templateParams\":{\"tableName\":\"t_order\",\"fields\":[\"订单金额\",\"实付金额\"]},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐金额类型\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R006"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
+        assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
+        assertThat(result.getTemplateParams()).containsEntry("expression",
+                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+        assertThat(result.getConfidence()).isEqualTo("HIGH");
+        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+    }
+
+    @Test
+    void recommendRuleBindingUsesValidFieldExpressionModelRecommendationForR006() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order\","
+                + "\"expression\":\"实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额\"},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐金额关系表达式\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R006"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
+        assertThat(result.getTemplateParams()).containsEntry("expression",
+                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+    }
+
+    @Test
     void recommendRuleBindingUsesLocalRecommendationWhenModelUnavailable() {
         AiAssistService service = recommendationService(Optional.empty());
 
@@ -187,6 +223,22 @@ class AiAssistServiceTest {
         assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
         assertThat(result.getTemplateParams().get("fields")).asList().contains("用户ID", "订单状态");
         assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingUsesLocalFieldExpressionForR006WhenModelUnavailable() {
+        AiAssistService service = recommendationService(Optional.empty());
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R006"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
+        assertThat(result.getConfidence()).isEqualTo("HIGH");
+        assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
+        assertThat(result.getTemplateParams()).containsEntry("expression",
+                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
     }
 
     @Test
@@ -235,9 +287,15 @@ class AiAssistServiceTest {
         RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
         DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
         RuleDefinitionEntity rule = rule("ds-1", "R002", "订单必填字段", "NOT_NULL");
+        RuleDefinitionEntity r006 = rule("ds-1", "R006", "实付金额与订单金额关系校验", "");
+        r006.setCategory("SINGLE_TABLE_BUSINESS_RULE");
+        r006.setDescription("实付金额应等于订单金额减优惠金额，且不得大于订单金额");
+        r006.setPseudoLogic("实付金额 = 订单金额 - 优惠金额 AND 实付金额 <= 订单金额");
         when(ruleRepository.findById(new RuleDefinitionEntity.Key("R002", "ds-1"))).thenReturn(Optional.of(rule));
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("R006", "ds-1"))).thenReturn(Optional.of(r006));
         when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
-                table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "下单时间", "收货地址")));
+                table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "下单时间",
+                        "收货地址", "订单金额", "优惠金额", "实付金额")));
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
                 new ObjectMapper(), ruleRepository, tableRepository);
     }

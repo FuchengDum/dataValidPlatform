@@ -166,7 +166,7 @@ class TemplateBindingValidator {
         return "==".equals(token) || "=".equals(token) || "!=".equals(token)
                 || ">=".equals(token) || "<=".equals(token) || ">".equals(token)
                 || "<".equals(token) || "+".equals(token) || "-".equals(token)
-                || "*".equals(token) || "/".equals(token);
+                || "*".equals(token) || "/".equals(token) || "&&".equals(token);
     }
 
     private static String asString(Object value) {

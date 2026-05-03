@@ -13,6 +13,23 @@ class TemplateExpressionEvaluator {
     }
 
     static Optional<Result> evaluate(String expression, DataRow row) {
+        Result first = null;
+        for (String condition : expression.split("\\s+&&\\s+")) {
+            Optional<Result> result = evaluateSingle(condition, row);
+            if (!result.isPresent()) {
+                return Optional.empty();
+            }
+            if (first == null) {
+                first = result.get();
+            }
+            if (!result.get().isSatisfied()) {
+                return result;
+            }
+        }
+        return Optional.ofNullable(first);
+    }
+
+    private static Optional<Result> evaluateSingle(String expression, DataRow row) {
         Optional<ComparisonExpression> parsed = parseComparison(expression);
         if (!parsed.isPresent()) {
             return Optional.empty();

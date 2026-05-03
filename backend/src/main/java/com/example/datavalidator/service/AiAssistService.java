@@ -36,7 +36,7 @@ public class AiAssistService {
     private static final String SOURCE_LOCAL = "LOCAL_RULE_BASED";
     private static final String SOURCE_AI = "OPENAI_COMPATIBLE";
     private static final List<String> SUPPORTED_RECOMMENDATION_TEMPLATES = Arrays.asList(
-            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE");
+            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION");
 
     private final AiChatClient aiChatClient;
     private final ObjectMapper objectMapper;
@@ -108,7 +108,7 @@ public class AiAssistService {
             return local;
         }
         Optional<RuleBindingRecommendationResult> generated = modelResponse
-                .flatMap(content -> parseRecommendationResult(content, tableFields));
+                .flatMap(content -> parseRecommendationResult(content, tableFields, rule));
         if (generated.isPresent()) {
             return generated.get();
         }
@@ -153,25 +153,34 @@ public class AiAssistService {
         result.setGeneratedByAi(false);
         result.setRequiresHumanReview(true);
         result.setConfidence("MEDIUM");
-        result.setTemplateCode(resolveLocalTemplateCode(rule));
         String tableName = firstApplicableTable(rule, tableFields);
         Map<String, Object> params = new LinkedHashMap<>();
-        params.put("tableName", tableName);
-        params.put("fields", localFields(rule, tableFields.getOrDefault(tableName, Collections.emptyList())));
+        if ("R006".equals(rule.getRuleId())
+                && hasFields(tableFields.get(tableName), "订单金额", "优惠金额", "实付金额")) {
+            result.setTemplateCode("FIELD_EXPRESSION");
+            result.setConfidence("HIGH");
+            params.put("tableName", tableName);
+            params.put("expression", "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+            result.setExplanation("基于 R006 内置规则语义生成字段表达式模板，请人工确认后应用。");
+        } else {
+            result.setTemplateCode(resolveLocalTemplateCode(rule));
+            params.put("tableName", tableName);
+            params.put("fields", localFields(rule, tableFields.getOrDefault(tableName, Collections.emptyList())));
+            result.setExplanation("基于规则文本、默认模板编码和数据集字段生成的本地推荐，请人工确认后应用。");
+        }
         result.setTemplateParams(params);
-        result.setExplanation("基于规则文本、默认模板编码和数据集字段生成的本地推荐，请人工确认后应用。");
         return result;
     }
 
     private Optional<RuleBindingRecommendationResult> parseRecommendationResult(
-            String content, Map<String, List<String>> tableFields) {
+            String content, Map<String, List<String>> tableFields, RuleDefinitionEntity rule) {
         try {
             Map<String, Object> values = objectMapper.readValue(stripCodeFence(content),
                     new TypeReference<Map<String, Object>>() {});
             RuleBindingRecommendationResult result = new RuleBindingRecommendationResult();
             result.setTemplateCode(stringValue(values, "templateCode"));
             result.setTemplateParams(objectMap(values.get("templateParams")));
-            if (!isValidRecommendation(result, tableFields)) {
+            if (!isValidRecommendation(result, tableFields, rule)) {
                 return Optional.empty();
             }
             result.setSource(SOURCE_AI);
@@ -259,8 +268,10 @@ public class AiAssistService {
 
     private String recommendationSystemPrompt() {
         return "你是业务规则模板推荐助手。只允许输出 JSON，字段为 templateCode、templateParams、confidence、explanation。"
-                + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE。"
-                + "templateParams 必须包含 tableName 和 fields，且只能使用用户提供的表名和字段名。";
+                + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE、FIELD_EXPRESSION。"
+                + "字段级模板参数必须包含 tableName 和 fields；FIELD_EXPRESSION 参数必须包含 tableName 和 expression。"
+                + "R006 这类金额关系规则必须推荐 FIELD_EXPRESSION，不能推荐 NUMERIC_TYPE。"
+                + "所有参数只能使用用户提供的表名和字段名。";
     }
 
     private String sqlUserPrompt(SqlDraftRequest request) {
@@ -372,13 +383,21 @@ public class AiAssistService {
         return fields;
     }
 
-    private boolean isValidRecommendation(RuleBindingRecommendationResult result, Map<String, List<String>> tableFields) {
+    private boolean isValidRecommendation(RuleBindingRecommendationResult result,
+                                          Map<String, List<String>> tableFields,
+                                          RuleDefinitionEntity rule) {
         if (!SUPPORTED_RECOMMENDATION_TEMPLATES.contains(result.getTemplateCode())) {
+            return false;
+        }
+        if ("R006".equals(rule.getRuleId()) && !"FIELD_EXPRESSION".equals(result.getTemplateCode())) {
             return false;
         }
         String tableName = objectString(result.getTemplateParams().get("tableName"));
         if (!tableFields.containsKey(tableName)) {
             return false;
+        }
+        if ("FIELD_EXPRESSION".equals(result.getTemplateCode())) {
+            return isValidFieldExpression(result, tableFields.getOrDefault(tableName, Collections.emptyList()));
         }
         List<String> fields = objectStringList(result.getTemplateParams().get("fields"));
         if (fields.isEmpty()) {
@@ -386,6 +405,43 @@ public class AiAssistService {
         }
         List<String> headers = tableFields.getOrDefault(tableName, Collections.emptyList());
         return headers.containsAll(fields);
+    }
+
+    private boolean isValidFieldExpression(RuleBindingRecommendationResult result, List<String> headers) {
+        String expression = objectString(result.getTemplateParams().get("expression"));
+        if (isBlank(expression)) {
+            return false;
+        }
+        boolean hasField = false;
+        for (String token : expression.split("\\s+")) {
+            if (isExpressionOperator(token) || ValueParsers.decimal(token).isPresent()) {
+                continue;
+            }
+            if (!headers.contains(token)) {
+                return false;
+            }
+            hasField = true;
+        }
+        return hasField;
+    }
+
+    private boolean isExpressionOperator(String token) {
+        return "==".equals(token) || "=".equals(token) || "!=".equals(token)
+                || ">=".equals(token) || "<=".equals(token) || ">".equals(token)
+                || "<".equals(token) || "+".equals(token) || "-".equals(token)
+                || "*".equals(token) || "/".equals(token) || "&&".equals(token);
+    }
+
+    private boolean hasFields(List<String> headers, String... fields) {
+        if (headers == null) {
+            return false;
+        }
+        for (String field : fields) {
+            if (!headers.contains(field)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Map<String, Object> objectMap(Object value) {

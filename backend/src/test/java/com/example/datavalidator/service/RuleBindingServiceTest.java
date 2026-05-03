@@ -177,6 +177,26 @@ class RuleBindingServiceTest {
                 .hasMessageContaining("字段不存在");
     }
 
+    @Test
+    void updateBindingAcceptsExpressionTemplateWithMultipleConditions() {
+        RuleDefinitionEntity rule = rule("ds-1", "C005", "实付金额关系校验");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C005", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C005")).thenReturn(Optional.empty());
+        when(bindingRepository.save(any(RuleBindingEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order", "订单金额", "优惠金额", "实付金额")));
+        RuleBindingService.BindingRequest request = request("FIELD_EXPRESSION")
+                .param("tableName", "t_order")
+                .param("expression", "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额")
+                .build();
+
+        RuleBindingService.BindingView saved = service.updateBinding("ds-1", "C005", request);
+
+        assertThat(saved.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
+        assertThat(saved.getTemplateParams()).containsEntry("expression",
+                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+    }
+
     private RuleDefinitionEntity rule(String datasetId, String ruleId, String ruleName) {
         RuleDefinitionEntity entity = new RuleDefinitionEntity();
         entity.setDatasetId(datasetId);

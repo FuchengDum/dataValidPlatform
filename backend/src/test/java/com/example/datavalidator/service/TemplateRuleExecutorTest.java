@@ -88,6 +88,26 @@ class TemplateRuleExecutorTest {
     }
 
     @Test
+    void fieldExpressionTemplateSupportsAllConditions() {
+        DataTable orders = table("t_order", "订单ID",
+                row("ORD001", "订单ID", "ORD001", "订单金额", "100", "优惠金额", "10", "实付金额", "90"),
+                row("ORD002", "订单ID", "ORD002", "订单金额", "100", "优惠金额", "10", "实付金额", "95"),
+                row("ORD003", "订单ID", "ORD003", "订单金额", "100", "优惠金额", "-10", "实付金额", "110"));
+        RuleBinding binding = template("R006", "FIELD_EXPRESSION")
+                .param("tableName", "t_order")
+                .param("expression", "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额")
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R006", "实付金额与订单金额关系校验"),
+                tables(orders), binding);
+
+        assertThat(findings).hasSize(2);
+        assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("ORD002", "ORD003");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("订单金额 - 优惠金额");
+        assertThat(findings.get(1).getExpectedValue()).isEqualTo("订单金额");
+    }
+
+    @Test
     void existsInTableTemplateReportsMissingTargetKey() {
         DataTable items = table("order_item", "明细ID",
                 row("I001", "明细ID", "I001", "商品ID", "P001"),
