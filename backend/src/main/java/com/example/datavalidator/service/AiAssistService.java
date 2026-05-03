@@ -36,7 +36,7 @@ public class AiAssistService {
     private static final String SOURCE_LOCAL = "LOCAL_RULE_BASED";
     private static final String SOURCE_AI = "OPENAI_COMPATIBLE";
     private static final List<String> SUPPORTED_RECOMMENDATION_TEMPLATES = Arrays.asList(
-            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION",
+            "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION", "ROW_EXPRESSION",
             "EXISTS_IN_TABLE", "FIELD_EQUALS", "AGGREGATION_EQUALS", "DUPLICATE_CHECK");
 
     private final AiChatClient aiChatClient;
@@ -262,8 +262,10 @@ public class AiAssistService {
     private String recommendationSystemPrompt() {
         return "你是业务规则模板推荐助手。只允许输出 JSON，字段为 templateCode、templateParams、confidence、explanation。"
                 + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE、FIELD_EXPRESSION、"
-                + "EXISTS_IN_TABLE、FIELD_EQUALS、AGGREGATION_EQUALS、DUPLICATE_CHECK。"
+                + "ROW_EXPRESSION、EXISTS_IN_TABLE、FIELD_EQUALS、AGGREGATION_EQUALS、DUPLICATE_CHECK。"
                 + "字段级模板参数必须包含 tableName 和 fields；FIELD_EXPRESSION 参数必须包含 tableName 和 expression。"
+                + "ROW_EXPRESSION 参数必须包含 tableName 和 conditions；conditions 每项包含 left、operator、right；"
+                + "表达式节点可使用 field、literal/value，或 op + left + right 表达 +、-、*、/。"
                 + "EXISTS_IN_TABLE 参数必须包含 source、target、key；"
                 + "FIELD_EQUALS 参数必须包含 source、target、key、sourceField、targetField；"
                 + "AGGREGATION_EQUALS 参数必须包含 source、target、groupBy、sum、targetField，可选 targetKey；"
@@ -366,7 +368,60 @@ public class AiAssistService {
                 return Optional.of("模型表达式未覆盖本地语义映射条件");
             }
         }
+        if (localMatch.isApplicable() && "ROW_EXPRESSION".equals(localMatch.getTemplateCode())
+                && "ROW_EXPRESSION".equals(result.getTemplateCode())) {
+            if (!containsAllRowConditions(result.getTemplateParams().get("conditions"),
+                    localMatch.getTemplateParams().get("conditions"))) {
+                return Optional.of("模型行表达式未覆盖本地语义映射条件");
+            }
+        }
         return Optional.empty();
+    }
+
+    private boolean containsAllRowConditions(Object conditions, Object requiredConditions) {
+        List<String> actual = rowConditionTexts(conditions);
+        for (String required : rowConditionTexts(requiredConditions)) {
+            if (!actual.contains(required)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private List<String> rowConditionTexts(Object rawConditions) {
+        List<String> result = new ArrayList<>();
+        if (!(rawConditions instanceof List)) {
+            return result;
+        }
+        for (Object item : (List<?>) rawConditions) {
+            if (!(item instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> condition = (Map<?, ?>) item;
+            result.add(rowExpressionText(condition.get("left")) + " "
+                    + objectString(condition.get("operator")) + " "
+                    + rowExpressionText(condition.get("right")));
+        }
+        return result;
+    }
+
+    private String rowExpressionText(Object rawExpression) {
+        if (!(rawExpression instanceof Map)) {
+            return objectString(rawExpression);
+        }
+        Map<?, ?> expression = (Map<?, ?>) rawExpression;
+        if (expression.containsKey("field")) {
+            return objectString(expression.get("field"));
+        }
+        if (expression.containsKey("literal")) {
+            return objectString(expression.get("literal"));
+        }
+        if (expression.containsKey("value")) {
+            return objectString(expression.get("value"));
+        }
+        return rowExpressionText(expression.get("left")) + " "
+                + objectString(expression.get("op")) + " "
+                + rowExpressionText(expression.get("right"));
     }
 
     private boolean containsAllConditions(String expression, String requiredExpression) {

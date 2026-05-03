@@ -240,6 +240,45 @@ class RuleBindingServiceTest {
     }
 
     @Test
+    void updateBindingAcceptsRowExpressionTemplateWithStructuredConditions() {
+        RuleDefinitionEntity rule = rule("ds-1", "C009", "实付金额关系校验");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C009", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C009")).thenReturn(Optional.empty());
+        when(bindingRepository.save(any(RuleBindingEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order", "订单金额", "优惠金额", "实付金额")));
+        RuleBindingService.BindingRequest request = request("ROW_EXPRESSION")
+                .param("tableName", "t_order")
+                .param("conditions", Arrays.asList(
+                        condition(field("实付金额"), "==", op("-", field("订单金额"), field("优惠金额"))),
+                        condition(field("实付金额"), "<=", field("订单金额"))))
+                .build();
+
+        RuleBindingService.BindingView saved = service.updateBinding("ds-1", "C009", request);
+
+        assertThat(saved.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(saved.getTemplateParams().get("conditions")).asList().hasSize(2);
+    }
+
+    @Test
+    void updateBindingRejectsRowExpressionTemplateWithUnknownField() {
+        RuleDefinitionEntity rule = rule("ds-1", "C010", "非法行表达式");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C010", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C010")).thenReturn(Optional.empty());
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order", "订单金额", "优惠金额", "实付金额")));
+        RuleBindingService.BindingRequest request = request("ROW_EXPRESSION")
+                .param("tableName", "t_order")
+                .param("conditions", Arrays.asList(
+                        condition(field("实付金额"), "==", op("-", field("订单金额"), field("不存在字段")))))
+                .build();
+
+        assertThatThrownBy(() -> service.updateBinding("ds-1", "C010", request))
+                .isInstanceOf(com.example.datavalidator.exception.BadRequestException.class)
+                .hasMessageContaining("字段不存在");
+    }
+
+    @Test
     void updateBindingRejectsExpressionTemplateThatCannotBeParsed() {
         RuleDefinitionEntity rule = rule("ds-1", "C006", "非法表达式校验");
         when(ruleRepository.findById(new RuleDefinitionEntity.Key("C006", "ds-1"))).thenReturn(Optional.of(rule));
@@ -265,6 +304,28 @@ class RuleBindingServiceTest {
         entity.setSeverity("CRITICAL");
         entity.setTemplateCode("NOT_NULL");
         return entity;
+    }
+
+    private Map<String, Object> condition(Object left, String operator, Object right) {
+        Map<String, Object> condition = new LinkedHashMap<>();
+        condition.put("left", left);
+        condition.put("operator", operator);
+        condition.put("right", right);
+        return condition;
+    }
+
+    private Map<String, Object> field(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("field", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> op(String operator, Object left, Object right) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("op", operator);
+        expression.put("left", left);
+        expression.put("right", right);
+        return expression;
     }
 
     private RuleBindingEntity binding(String datasetId, String ruleId, String executorType,

@@ -34,6 +34,8 @@ public class TemplateRuleExecutor {
                 return numericType(rule, table(tables, params), fields(params.get("fields")));
             case "FIELD_EXPRESSION":
                 return fieldExpression(rule, table(tables, params), asString(params.get("expression")));
+            case "ROW_EXPRESSION":
+                return rowExpression(rule, table(tables, params), params.get("conditions"));
             case "EXISTS_IN_TABLE":
                 return existsInTable(rule, tables, params);
             case "FIELD_EQUALS":
@@ -109,6 +111,23 @@ public class TemplateRuleExecutor {
                 findings.add(finding(rule, table, row, result.get().getLeftField(),
                         result.get().getActualSummary(), result.get().getFailedCondition(),
                         expression + " 不成立", "CALCULATION"));
+            }
+        }
+        return findings;
+    }
+
+    private List<ValidationFinding> rowExpression(RuleDefinition rule, DataTable table, Object conditions) {
+        if (table == null) {
+            return Collections.emptyList();
+        }
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (DataRow row : table.getRows()) {
+            Optional<RowExpressionEvaluator.Result> result = RowExpressionEvaluator.evaluate(conditions, row);
+            if (result.isPresent()) {
+                RowExpressionEvaluator.Result failed = result.get();
+                findings.add(finding(rule, table, row, failed.getFieldName(),
+                        failed.getActualSummary(), failed.getFailedCondition(),
+                        "行表达式条件不成立", "CALCULATION"));
             }
         }
         return findings;

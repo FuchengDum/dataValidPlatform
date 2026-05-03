@@ -423,7 +423,7 @@ function labelDraftType(draftType) {
 
 function summarizeParams(params = {}) {
   return Object.entries(params)
-    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join('/') : value}`)
+    .map(([key, value]) => `${key}=${stringifyParam(value)}`)
     .join(', ')
 }
 
@@ -436,7 +436,7 @@ function paramEntries(params = {}) {
 
 function stringifyParam(value) {
   if (Array.isArray(value)) {
-    return value.join(' / ')
+    return value.map((item) => stringifyParam(item)).join(' / ')
   }
   if (value && typeof value === 'object') {
     return JSON.stringify(value)

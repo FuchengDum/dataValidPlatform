@@ -261,19 +261,21 @@ class AiAssistServiceTest {
 
         assertThat(result.isGeneratedByAi()).isFalse();
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
-        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
         assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
-        assertThat(result.getTemplateParams()).containsEntry("expression",
-                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
         assertThat(result.getConfidence()).isEqualTo("HIGH");
         assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
     }
 
     @Test
-    void recommendRuleBindingUsesValidFieldExpressionModelRecommendationForR006() {
-        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+    void recommendRuleBindingUsesValidRowExpressionModelRecommendationForR006() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
                 + "\"templateParams\":{\"tableName\":\"t_order\","
-                + "\"expression\":\"实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额\"},"
+                + "\"conditions\":["
+                + "{\"left\":{\"field\":\"实付金额\"},\"operator\":\"==\","
+                + "\"right\":{\"op\":\"-\",\"left\":{\"field\":\"订单金额\"},\"right\":{\"field\":\"优惠金额\"}}},"
+                + "{\"left\":{\"field\":\"实付金额\"},\"operator\":\"<=\",\"right\":{\"field\":\"订单金额\"}}]},"
                 + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐金额关系表达式\"}"));
 
         AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
@@ -281,16 +283,16 @@ class AiAssistServiceTest {
 
         assertThat(result.isGeneratedByAi()).isTrue();
         assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
-        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
-        assertThat(result.getTemplateParams()).containsEntry("expression",
-                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
     }
 
     @Test
     void recommendRuleBindingFallsBackWhenR006ModelExpressionMissesRequiredCondition() {
-        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
                 + "\"templateParams\":{\"tableName\":\"t_order\","
-                + "\"expression\":\"实付金额 <= 订单金额\"},"
+                + "\"conditions\":[{\"left\":{\"field\":\"实付金额\"},\"operator\":\"<=\","
+                + "\"right\":{\"field\":\"订单金额\"}}]},"
                 + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐弱金额关系\"}"));
 
         AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
@@ -298,9 +300,8 @@ class AiAssistServiceTest {
 
         assertThat(result.isGeneratedByAi()).isFalse();
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
-        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
-        assertThat(result.getTemplateParams()).containsEntry("expression",
-                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
         assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
     }
 
@@ -345,11 +346,10 @@ class AiAssistServiceTest {
 
         assertThat(result.isGeneratedByAi()).isFalse();
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
-        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
         assertThat(result.getConfidence()).isEqualTo("HIGH");
         assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
-        assertThat(result.getTemplateParams()).containsEntry("expression",
-                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
     }
 
     @Test

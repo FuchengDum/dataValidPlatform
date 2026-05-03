@@ -28,6 +28,9 @@ class TemplateBindingValidator {
             case "FIELD_EXPRESSION":
                 validateFieldExpression(params, headersByTable);
                 break;
+            case "ROW_EXPRESSION":
+                validateRowExpression(params, headersByTable);
+                break;
             case "EXISTS_IN_TABLE":
                 validateExistsInTable(params, headersByTable);
                 break;
@@ -75,6 +78,12 @@ class TemplateBindingValidator {
         if (!TemplateExpressionEvaluator.isValidExpression(expression, headers)) {
             throw new BadRequestException("表达式格式不支持: " + expression);
         }
+    }
+
+    private static void validateRowExpression(Map<String, Object> params, Map<String, List<String>> headersByTable) {
+        String tableName = requireParam(params, "tableName");
+        List<String> headers = requireTable(headersByTable, tableName);
+        RowExpressionEvaluator.validate(params.get("conditions"), headers);
     }
 
     private static void validateExistsInTable(Map<String, Object> params, Map<String, List<String>> headersByTable) {

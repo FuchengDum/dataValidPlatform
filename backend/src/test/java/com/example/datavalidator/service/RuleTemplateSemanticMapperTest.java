@@ -26,17 +26,30 @@ class RuleTemplateSemanticMapperTest {
     }
 
     @Test
-    void mapsAmountRelationshipToFieldExpressionWithoutRuleIdSpecialCase() {
+    void mapsAmountRelationshipToRowExpressionWithoutRuleIdSpecialCase() {
         RuleTemplateSemanticMatch match = mapper.recommend(rule("C900", "实付金额与订单金额关系校验",
                 "实付金额应等于订单金额减优惠金额，且不得大于订单金额",
                 "实付金额 = 订单金额 - 优惠金额 AND 实付金额 <= 订单金额", "t_order"),
                 tables(table("t_order", "订单ID", "订单金额", "优惠金额", "实付金额")));
 
         assertThat(match.isApplicable()).isTrue();
-        assertThat(match.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
+        assertThat(match.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
         assertThat(match.getConfidence()).isEqualTo("HIGH");
-        assertThat(match.getTemplateParams()).containsEntry("expression",
-                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+        assertThat(match.getTemplateParams()).containsEntry("tableName", "t_order");
+        assertThat(match.getTemplateParams().get("conditions")).asList().hasSize(2);
+    }
+
+    @Test
+    void mapsArbitraryFieldRelationshipToRowExpression() {
+        RuleTemplateSemanticMatch match = mapper.recommend(rule("C901", "应收金额关系校验",
+                "应收金额应等于合同金额减减免金额，且应收金额不大于合同金额",
+                "应收金额 = 合同金额 - 减免金额 AND 应收金额 <= 合同金额", "contract_bill"),
+                tables(table("contract_bill", "账单ID", "合同金额", "减免金额", "应收金额")));
+
+        assertThat(match.isApplicable()).isTrue();
+        assertThat(match.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(match.getTemplateParams()).containsEntry("tableName", "contract_bill");
+        assertThat(match.getTemplateParams().get("conditions")).asList().hasSize(2);
     }
 
     @Test

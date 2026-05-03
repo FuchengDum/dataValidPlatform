@@ -8,7 +8,6 @@ import com.example.datavalidator.domain.RuleDefinition;
 import com.example.datavalidator.domain.Severity;
 import com.example.datavalidator.domain.WorkbookDataset;
 import com.example.datavalidator.exception.BadRequestException;
-import com.example.datavalidator.persistence.DataRowSnapshotEntity;
 import com.example.datavalidator.persistence.DataTableSnapshotEntity;
 import com.example.datavalidator.persistence.DatasetEntity;
 import com.example.datavalidator.persistence.RuleBindingEntity;
@@ -61,19 +60,22 @@ public class ExcelImportService {
     private final RuleDefinitionRepository ruleRepository;
     private final RuleBindingRepository bindingRepository;
     private final JsonService jsonService;
+    private final BusinessTableDataProvider businessTableDataProvider;
 
     public ExcelImportService(DatasetRepository datasetRepository,
                               DataTableSnapshotRepository tableRepository,
                               DataRowSnapshotRepository rowRepository,
                               RuleDefinitionRepository ruleRepository,
                               RuleBindingRepository bindingRepository,
-                              JsonService jsonService) {
+                              JsonService jsonService,
+                              BusinessTableDataProvider businessTableDataProvider) {
         this.datasetRepository = datasetRepository;
         this.tableRepository = tableRepository;
         this.rowRepository = rowRepository;
         this.ruleRepository = ruleRepository;
         this.bindingRepository = bindingRepository;
         this.jsonService = jsonService;
+        this.businessTableDataProvider = businessTableDataProvider;
     }
 
     @Transactional
@@ -94,10 +96,7 @@ public class ExcelImportService {
             dataset.setFileName(fileName);
             dataset.setSourceName(fileName);
 
-            for (Map.Entry<String, String> entry : BUSINESS_SHEETS.entrySet()) {
-                DataTable table = readBusinessTable(workbook.getSheet(entry.getKey()), entry.getKey(), entry.getValue());
-                dataset.getBusinessTables().put(entry.getValue(), table);
-            }
+            dataset.setBusinessTables(businessTableDataProvider.loadAllTables());
 
             Map<String, List<String>> scenarioMap = readScenarioMap(workbook.getSheet("校验场景覆盖矩阵"));
             List<RuleDefinition> rules = readRules(workbook.getSheet("业务规则库"), scenarioMap);
@@ -123,22 +122,27 @@ public class ExcelImportService {
         dataset.setFileName(datasetEntity.getFileName());
 
         for (DataTableSnapshotEntity tableEntity : tableRepository.findByDatasetId(datasetId)) {
-            DataTable table = new DataTable();
-            table.setSheetName(tableEntity.getSheetName());
-            table.setLogicalName(tableEntity.getLogicalName());
-            table.setSourceType(DatasetSourceType.valueOf(tableEntity.getSourceType()));
-            table.setHeaders(jsonService.readStringList(tableEntity.getHeadersJson()));
-            List<DataRow> rows = rowRepository
-                    .findByDatasetIdAndTableNameOrderByRowIndex(datasetId, tableEntity.getLogicalName())
-                    .stream()
-                    .map(entity -> {
-                        DataRow row = new DataRow();
-                        row.setRowIndex(entity.getRowIndex());
-                        row.setPrimaryKey(entity.getPrimaryKey());
-                        row.setValues(jsonService.readStringMap(entity.getValuesJson()));
-                        return row;
-                    }).collect(Collectors.toList());
-            table.setRows(rows);
+            DataTable table;
+            if (DatasetSourceType.DATABASE_TABLE.name().equals(tableEntity.getSourceType())) {
+                table = businessTableDataProvider.loadTable(tableEntity.getLogicalName());
+            } else {
+                table = new DataTable();
+                table.setSheetName(tableEntity.getSheetName());
+                table.setLogicalName(tableEntity.getLogicalName());
+                table.setSourceType(DatasetSourceType.valueOf(tableEntity.getSourceType()));
+                table.setHeaders(jsonService.readStringList(tableEntity.getHeadersJson()));
+                List<DataRow> rows = rowRepository
+                        .findByDatasetIdAndTableNameOrderByRowIndex(datasetId, tableEntity.getLogicalName())
+                        .stream()
+                        .map(entity -> {
+                            DataRow row = new DataRow();
+                            row.setRowIndex(entity.getRowIndex());
+                            row.setPrimaryKey(entity.getPrimaryKey());
+                            row.setValues(jsonService.readStringMap(entity.getValuesJson()));
+                            return row;
+                        }).collect(Collectors.toList());
+                table.setRows(rows);
+            }
             dataset.getBusinessTables().put(table.getLogicalName(), table);
         }
 
@@ -149,8 +153,8 @@ public class ExcelImportService {
     }
 
     private void validateSheets(Workbook workbook) {
-        List<String> required = new ArrayList<>(BUSINESS_SHEETS.keySet());
-        required.addAll(Arrays.asList("业务规则库", "字段约束说明", "关联逻辑说明", "校验场景覆盖矩阵", "使用说明"));
+        List<String> required = new ArrayList<>(
+                Arrays.asList("业务规则库", "字段约束说明", "关联逻辑说明", "校验场景覆盖矩阵", "使用说明"));
         for (String sheetName : required) {
             if (workbook.getSheet(sheetName) == null) {
                 throw new BadRequestException("缺少必需 sheet：" + sheetName);
@@ -305,17 +309,6 @@ public class ExcelImportService {
             tableEntity.setHeadersJson(jsonService.write(table.getHeaders()));
             tableEntity.setRowCount(table.getRows().size());
             tableRepository.save(tableEntity);
-
-            for (DataRow row : table.getRows()) {
-                DataRowSnapshotEntity rowEntity = new DataRowSnapshotEntity();
-                rowEntity.setId(IdFactory.next("row"));
-                rowEntity.setDatasetId(dataset.getDatasetId());
-                rowEntity.setTableName(table.getLogicalName());
-                rowEntity.setRowIndex(row.getRowIndex());
-                rowEntity.setPrimaryKey(row.getPrimaryKey());
-                rowEntity.setValuesJson(jsonService.write(row.getValues()));
-                rowRepository.save(rowEntity);
-            }
         }
 
         for (RuleDefinition rule : dataset.getRules()) {

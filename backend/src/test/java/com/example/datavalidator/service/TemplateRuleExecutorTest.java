@@ -111,6 +111,51 @@ class TemplateRuleExecutorTest {
     }
 
     @Test
+    void rowExpressionTemplateSupportsR006AmountRelationship() {
+        DataTable orders = table("t_order", "订单ID",
+                row("ORD001", "订单ID", "ORD001", "订单金额", "299", "优惠金额", "30", "实付金额", "269"),
+                row("ORD006", "订单ID", "ORD006", "订单金额", "500", "优惠金额", "30", "实付金额", "520"));
+        RuleBinding binding = template("R006", "ROW_EXPRESSION")
+                .param("tableName", "t_order")
+                .param("conditions", Arrays.asList(
+                        condition(field("实付金额"), "==", op("-", field("订单金额"), field("优惠金额"))),
+                        condition(field("实付金额"), "<=", field("订单金额"))))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R006", "实付金额与订单金额关系校验"),
+                tables(orders), binding);
+
+        assertThat(findings).hasSize(1);
+        ValidationFinding finding = findings.get(0);
+        assertThat(finding.getRecordKey()).isEqualTo("ORD006");
+        assertThat(finding.getFieldName()).isEqualTo("实付金额");
+        assertThat(finding.getActualValue()).contains("实付金额=520", "订单金额 - 优惠金额=470");
+        assertThat(finding.getExpectedValue()).isEqualTo("实付金额 == 订单金额 - 优惠金额");
+        assertThat(finding.getDescription()).isEqualTo("行表达式条件不成立");
+    }
+
+    @Test
+    void rowExpressionTemplateCanValidateArbitraryAmountFields() {
+        DataTable contracts = table("contract_bill", "账单ID",
+                row("B001", "账单ID", "B001", "合同金额", "1000", "减免金额", "80", "应收金额", "920"),
+                row("B002", "账单ID", "B002", "合同金额", "1000", "减免金额", "80", "应收金额", "950"));
+        RuleBinding binding = template("C900", "ROW_EXPRESSION")
+                .param("tableName", "contract_bill")
+                .param("conditions", Arrays.asList(
+                        condition(field("应收金额"), "==", op("-", field("合同金额"), field("减免金额"))),
+                        condition(field("应收金额"), "<=", field("合同金额"))))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("C900", "应收金额关系校验"),
+                tables(contracts), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("B002");
+        assertThat(findings.get(0).getActualValue()).contains("应收金额=950", "合同金额 - 减免金额=920");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("应收金额 == 合同金额 - 减免金额");
+    }
+
+    @Test
     void existsInTableTemplateReportsMissingTargetKey() {
         DataTable items = table("order_item", "明细ID",
                 row("I001", "明细ID", "I001", "商品ID", "P001"),
@@ -291,6 +336,28 @@ class TemplateRuleExecutorTest {
         }
         row.setValues(cells);
         return row;
+    }
+
+    private Map<String, Object> condition(Object left, String operator, Object right) {
+        Map<String, Object> condition = new LinkedHashMap<>();
+        condition.put("left", left);
+        condition.put("operator", operator);
+        condition.put("right", right);
+        return condition;
+    }
+
+    private Map<String, Object> field(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("field", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> op(String operator, Object left, Object right) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("op", operator);
+        expression.put("left", left);
+        expression.put("right", right);
+        return expression;
     }
 
     private static class BindingBuilder {

@@ -12,7 +12,6 @@ import java.util.Map;
 
 class RuleTemplateSemanticMapper {
     private static final List<String> FIELD_TEMPLATES = Arrays.asList("NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE");
-    private static final String AMOUNT_EXPRESSION = "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额";
 
     RuleTemplateSemanticMatch recommend(RuleDefinitionEntity rule, Map<String, List<String>> tableFields) {
         String text = searchableText(rule);
@@ -80,22 +79,63 @@ class RuleTemplateSemanticMapper {
     private RuleTemplateSemanticMatch amountExpression(RuleDefinitionEntity rule,
                                                        Map<String, List<String>> tableFields,
                                                        String text) {
-        String tableName = firstApplicableTable(rule, tableFields);
-        List<String> headers = tableFields.getOrDefault(tableName, Collections.emptyList());
-        if (!hasFields(headers, "订单金额", "优惠金额", "实付金额")) {
-            return RuleTemplateSemanticMatch.unavailable("缺少金额关系字段。");
+        for (String tableName : applicableTables(rule, tableFields)) {
+            RowRelationship relationship = rowRelationship(tableFields.getOrDefault(tableName, Collections.emptyList()), text);
+            if (relationship != null) {
+                Map<String, Object> params = new LinkedHashMap<>();
+                params.put("tableName", tableName);
+                params.put("conditions", Arrays.asList(
+                        condition(field(relationship.left), "==",
+                                op("-", field(relationship.base), field(relationship.deduction))),
+                        condition(field(relationship.left), "<=", field(relationship.base))));
+                return applicable("ROW_EXPRESSION", params, "基于字段间计算关系推荐行表达式模板。", "HIGH");
+            }
         }
-        boolean hasBalance = text.contains("实付金额") && text.contains("订单金额")
-                && text.contains("优惠金额") && (text.contains("减") || text.contains("-"));
-        boolean hasLimit = text.contains("实付金额") && text.contains("订单金额")
-                && (text.contains("<=") || text.contains("不得大于") || text.contains("不大于"));
-        if (!hasBalance || !hasLimit) {
-            return RuleTemplateSemanticMatch.unavailable("规则文本未匹配完整金额关系。");
+        return RuleTemplateSemanticMatch.unavailable("规则文本未匹配完整字段计算关系。");
+    }
+
+    private RowRelationship rowRelationship(List<String> headers, String text) {
+        List<String> fields = fieldsInText(headers, text);
+        for (String left : fields) {
+            for (String base : fields) {
+                if (left.equals(base)) {
+                    continue;
+                }
+                for (String deduction : fields) {
+                    if (left.equals(deduction) || base.equals(deduction)) {
+                        continue;
+                    }
+                    if (hasSubtractionRelation(text, left, base, deduction) && hasUpperBound(text, left, base)) {
+                        return new RowRelationship(left, base, deduction);
+                    }
+                }
+            }
         }
-        Map<String, Object> params = new LinkedHashMap<>();
-        params.put("tableName", tableName);
-        params.put("expression", AMOUNT_EXPRESSION);
-        return applicable("FIELD_EXPRESSION", params, "基于金额字段关系推荐字段表达式模板。", "HIGH");
+        return null;
+    }
+
+    private boolean hasSubtractionRelation(String text, String left, String base, String deduction) {
+        String normalized = normalize(text);
+        return normalized.contains(left + "=" + base + "-" + deduction)
+                || normalized.contains(left + "==" + base + "-" + deduction)
+                || normalized.contains(left + "=" + base + "减" + deduction)
+                || normalized.contains(left + "==" + base + "减" + deduction)
+                || normalized.contains(left + "等于" + base + "减" + deduction)
+                || normalized.contains(left + "应等于" + base + "减" + deduction);
+    }
+
+    private boolean hasUpperBound(String text, String left, String base) {
+        String normalized = normalize(text);
+        return normalized.contains(left + "<=" + base)
+                || normalized.contains(left + "≤" + base)
+                || normalized.contains(left + ">" + base)
+                || normalized.contains(left + "不得大于" + base)
+                || normalized.contains(left + "不大于" + base)
+                || normalized.contains(left + "不超过" + base);
+    }
+
+    private String normalize(String text) {
+        return safe(text).replaceAll("\\s+", "");
     }
 
     private RuleTemplateSemanticMatch existsInTable(RuleDefinitionEntity rule,
@@ -199,6 +239,28 @@ class RuleTemplateSemanticMapper {
         return match;
     }
 
+    private Map<String, Object> condition(Object left, String operator, Object right) {
+        Map<String, Object> condition = new LinkedHashMap<>();
+        condition.put("left", left);
+        condition.put("operator", operator);
+        condition.put("right", right);
+        return condition;
+    }
+
+    private Map<String, Object> field(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("field", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> op(String operator, Object left, Object right) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("op", operator);
+        expression.put("left", left);
+        expression.put("right", right);
+        return expression;
+    }
+
     private String searchableText(RuleDefinitionEntity rule) {
         return safe(rule.getRuleName()) + " " + safe(rule.getDescription()) + " " + safe(rule.getPseudoLogic());
     }
@@ -283,19 +345,19 @@ class RuleTemplateSemanticMapper {
         return false;
     }
 
-    private boolean hasFields(List<String> headers, String... fields) {
-        if (headers == null) {
-            return false;
-        }
-        for (String field : fields) {
-            if (!headers.contains(field)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static class RowRelationship {
+        private final String left;
+        private final String base;
+        private final String deduction;
+
+        RowRelationship(String left, String base, String deduction) {
+            this.left = left;
+            this.base = base;
+            this.deduction = deduction;
+        }
     }
 }
