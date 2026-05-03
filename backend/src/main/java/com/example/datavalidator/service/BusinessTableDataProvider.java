@@ -7,6 +7,10 @@ import com.example.datavalidator.exception.BadRequestException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -15,6 +19,7 @@ import java.util.stream.Collectors;
 
 @Service
 public class BusinessTableDataProvider {
+    private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final List<TableDescriptor> TABLES = Arrays.asList(
             table("t_order", "订单ID", "订单ID", "用户ID", "订单状态", "订单金额", "实付金额", "优惠金额",
                     "下单时间", "支付时间", "收货地址", "备注", "数据标记"),
@@ -103,7 +108,19 @@ public class BusinessTableDataProvider {
     }
 
     private String stringValue(Object value) {
-        return value == null ? "" : value.toString();
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof BigDecimal) {
+            return ((BigDecimal) value).stripTrailingZeros().toPlainString();
+        }
+        if (value instanceof Timestamp) {
+            return ((Timestamp) value).toLocalDateTime().format(DATE_TIME);
+        }
+        if (value instanceof LocalDateTime) {
+            return ((LocalDateTime) value).format(DATE_TIME);
+        }
+        return value.toString();
     }
 
     private static TableDescriptor table(String logicalName, String primaryKey, String... headers) {

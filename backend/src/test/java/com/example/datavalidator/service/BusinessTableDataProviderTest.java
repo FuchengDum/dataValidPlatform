@@ -7,6 +7,8 @@ import org.springframework.jdbc.datasource.embedded.EmbeddedDatabase;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
 
+import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,6 +35,21 @@ class BusinessTableDataProviderTest {
                 assertThat(row.value("实付金额")).isEqualTo("520");
                 assertThat(row.value("优惠金额")).isEqualTo("30");
             });
+            assertThat(orders.getRows()).anySatisfy(row -> {
+                assertThat(row.getPrimaryKey()).isEqualTo("ORD001");
+                assertThat(row.value("下单时间")).isEqualTo("2026-04-01 09:15:00");
+            });
+
+            JdbcTemplate jdbcTemplate = new JdbcTemplate(database);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT \"订单金额\" FROM \"t_order\" WHERE \"订单ID\" = 'ORD001'", BigDecimal.class))
+                    .isEqualByComparingTo("299.00");
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT \"下单时间\" FROM \"t_order\" WHERE \"订单ID\" = 'ORD001'", Timestamp.class))
+                    .isNotNull();
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT \"订单金额\" FROM \"t_order\" WHERE \"订单ID\" = 'ORD014'", BigDecimal.class))
+                    .isNull();
         } finally {
             database.shutdown();
         }
