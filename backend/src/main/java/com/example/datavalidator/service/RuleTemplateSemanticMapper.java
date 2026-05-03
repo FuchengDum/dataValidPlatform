@@ -25,6 +25,10 @@ class RuleTemplateSemanticMapper {
         if (match.isApplicable()) {
             return match;
         }
+        match = relationExists(rule, tableFields, text);
+        if (match.isApplicable()) {
+            return match;
+        }
         match = genericRowExpression(rule, tableFields, text);
         if (match.isApplicable()) {
             return match;
@@ -313,6 +317,103 @@ class RuleTemplateSemanticMapper {
         return applicable("EXISTS_IN_TABLE", params, "基于跨表存在性语义推荐模板。", "HIGH");
     }
 
+    private RuleTemplateSemanticMatch relationExists(RuleDefinitionEntity rule,
+                                                     Map<String, List<String>> tableFields,
+                                                     String text) {
+        RuleTemplateSemanticMatch inventoryDeduction = inventoryDeductionRelation(tableFields, text);
+        if (inventoryDeduction.isApplicable()) {
+            return inventoryDeduction;
+        }
+        RuleTemplateSemanticMatch canceledPayment = canceledPaymentAntiRelation(tableFields, text);
+        if (canceledPayment.isApplicable()) {
+            return canceledPayment;
+        }
+        RuleTemplateSemanticMatch delistedOutbound = delistedOutboundAntiRelation(tableFields, text);
+        if (delistedOutbound.isApplicable()) {
+            return delistedOutbound;
+        }
+        RuleTemplateSemanticMatch paymentStatus = paymentStatusRelation(tableFields, text);
+        if (paymentStatus.isApplicable()) {
+            return paymentStatus;
+        }
+        return RuleTemplateSemanticMatch.unavailable("规则文本未匹配通用关系存在 DSL。");
+    }
+
+    private RuleTemplateSemanticMatch paymentStatusRelation(Map<String, List<String>> tableFields, String text) {
+        if (!(containsAny(text, "支付成功记录", "支付状态='支付成功'", "支付状态=支付成功")
+                && containsAny(text, "必须有", "not exists", "notexists"))) {
+            return RuleTemplateSemanticMatch.unavailable("未匹配支付成功存在性。");
+        }
+        String source = tableContainingFields(tableFields, "订单ID", "订单状态");
+        String target = tableContainingFields(tableFields, "订单ID", "支付状态");
+        if (ValueParsers.isBlank(source) || ValueParsers.isBlank(target)) {
+            return RuleTemplateSemanticMatch.unavailable("支付成功存在性缺少订单表或支付表。");
+        }
+        Map<String, Object> params = relationParams(source, target,
+                Collections.singletonList(relationKey("订单ID", "订单ID")), true);
+        params.put("sourceWhere", condition(field("订单状态"), "in", Arrays.asList("已支付", "已发货", "已完成")));
+        params.put("targetWhere", condition(field("支付状态"), "==", literal("支付成功")));
+        return applicable("RELATION_EXISTS", params, "基于状态过滤和支付记录存在性推荐关系存在模板。", "HIGH");
+    }
+
+    private RuleTemplateSemanticMatch inventoryDeductionRelation(Map<String, List<String>> tableFields, String text) {
+        if (!(containsAny(text, "库存出库记录", "出库数量")
+                && containsAny(text, "not exists", "notexists", "对应"))) {
+            return RuleTemplateSemanticMatch.unavailable("未匹配库存出库存在性。");
+        }
+        String source = tableContainingFields(tableFields, "订单ID", "商品ID", "数量");
+        String target = tableContainingFields(tableFields, "关联订单ID", "商品ID", "变动数量", "变动类型");
+        String statusTable = tableContainingFields(tableFields, "订单ID", "订单状态");
+        if (ValueParsers.isBlank(source) || ValueParsers.isBlank(target) || ValueParsers.isBlank(statusTable)) {
+            return RuleTemplateSemanticMatch.unavailable("库存扣减存在性缺少明细表、库存流水表或订单表。");
+        }
+        Map<String, Object> params = relationParams(source, target,
+                Arrays.asList(
+                        relationKey("订单ID", "关联订单ID"),
+                        relationKey("商品ID", "商品ID"),
+                        relationKey("数量", "变动数量")),
+                true);
+        params.put("targetWhere", condition(field("变动类型"), "==", literal("出库")));
+        params.put("sourceExists", sourceExists(statusTable,
+                Collections.singletonList(relationKey("订单ID", "订单ID")),
+                condition(field("订单状态"), "in", Arrays.asList("已支付", "已发货", "已完成"))));
+        return applicable("RELATION_EXISTS", params, "基于前置订单状态和复合 key 推荐库存扣减存在模板。", "HIGH");
+    }
+
+    private RuleTemplateSemanticMatch canceledPaymentAntiRelation(Map<String, List<String>> tableFields, String text) {
+        if (!containsAll(text, "已取消", "退款金额", "支付成功")) {
+            return RuleTemplateSemanticMatch.unavailable("未匹配取消订单支付反向存在性。");
+        }
+        String source = tableContainingFields(tableFields, "订单ID", "支付状态", "退款金额");
+        String target = tableContainingFields(tableFields, "订单ID", "订单状态");
+        if (ValueParsers.isBlank(source) || ValueParsers.isBlank(target)) {
+            return RuleTemplateSemanticMatch.unavailable("取消订单支付反向存在性缺少支付表或订单表。");
+        }
+        Map<String, Object> params = relationParams(source, target,
+                Collections.singletonList(relationKey("订单ID", "订单ID")), false);
+        params.put("sourceWhere", and(
+                condition(field("支付状态"), "==", literal("支付成功")),
+                condition(field("退款金额"), "==", literal(0))));
+        params.put("targetWhere", condition(field("订单状态"), "==", literal("已取消")));
+        return applicable("RELATION_EXISTS", params, "基于取消状态和支付退款条件推荐反向关系存在模板。", "HIGH");
+    }
+
+    private RuleTemplateSemanticMatch delistedOutboundAntiRelation(Map<String, List<String>> tableFields, String text) {
+        if (!containsAll(text, "下架", "出库")) {
+            return RuleTemplateSemanticMatch.unavailable("未匹配下架商品出库反向存在性。");
+        }
+        String source = tableContainingFields(tableFields, "商品ID", "变动类型");
+        String target = tableContainingFields(tableFields, "商品ID", "上架状态");
+        if (ValueParsers.isBlank(source) || ValueParsers.isBlank(target)) {
+            return RuleTemplateSemanticMatch.unavailable("下架商品出库反向存在性缺少库存流水表或商品表。");
+        }
+        Map<String, Object> params = relationParams(source, target,
+                Collections.singletonList(relationKey("商品ID", "商品ID")), false);
+        params.put("sourceWhere", condition(field("变动类型"), "==", literal("出库")));
+        params.put("targetWhere", condition(field("上架状态"), "==", literal("已下架")));
+        return applicable("RELATION_EXISTS", params, "基于出库流水和下架商品状态推荐反向关系存在模板。", "HIGH");
+    }
+
     private RuleTemplateSemanticMatch fieldEquals(RuleDefinitionEntity rule,
                                                   Map<String, List<String>> tableFields,
                                                   String text) {
@@ -408,6 +509,38 @@ class RuleTemplateSemanticMapper {
         condition.put("operator", operator);
         condition.put("right", right);
         return condition;
+    }
+
+    private Map<String, Object> and(Object... predicates) {
+        Map<String, Object> condition = new LinkedHashMap<>();
+        condition.put("and", Arrays.asList(predicates));
+        return condition;
+    }
+
+    private Map<String, Object> relationKey(String sourceField, String targetField) {
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put("sourceField", sourceField);
+        key.put("targetField", targetField);
+        return key;
+    }
+
+    private Map<String, Object> relationParams(String source, String target,
+                                               List<Map<String, Object>> keys,
+                                               boolean expectExists) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("source", source);
+        params.put("target", target);
+        params.put("keys", keys);
+        params.put("expectExists", expectExists);
+        return params;
+    }
+
+    private Map<String, Object> sourceExists(String target, List<Map<String, Object>> keys, Object targetWhere) {
+        Map<String, Object> sourceExists = new LinkedHashMap<>();
+        sourceExists.put("target", target);
+        sourceExists.put("keys", keys);
+        sourceExists.put("targetWhere", targetWhere);
+        return sourceExists;
     }
 
     private Map<String, Object> when(Map<String, Object> condition, Object predicate) {
@@ -609,6 +742,15 @@ class RuleTemplateSemanticMapper {
         return "";
     }
 
+    private String tableContainingFields(Map<String, List<String>> tableFields, String... fields) {
+        for (Map.Entry<String, List<String>> entry : tableFields.entrySet()) {
+            if (entry.getValue().containsAll(Arrays.asList(fields))) {
+                return entry.getKey();
+            }
+        }
+        return "";
+    }
+
     private boolean containsAny(String text, String... tokens) {
         String lower = text.toLowerCase(Locale.ROOT);
         for (String token : tokens) {
@@ -617,6 +759,16 @@ class RuleTemplateSemanticMapper {
             }
         }
         return false;
+    }
+
+    private boolean containsAll(String text, String... tokens) {
+        String lower = text.toLowerCase(Locale.ROOT);
+        for (String token : tokens) {
+            if (!lower.contains(token.toLowerCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String safe(String value) {

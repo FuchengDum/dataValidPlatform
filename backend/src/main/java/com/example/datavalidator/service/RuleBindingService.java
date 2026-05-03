@@ -21,7 +21,8 @@ import java.util.stream.Collectors;
 public class RuleBindingService {
     private static final List<String> SUPPORTED_TEMPLATE_CODES = Arrays.asList(
             "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION",
-            "ROW_EXPRESSION", "EXISTS_IN_TABLE", "FIELD_EQUALS", "AGGREGATION_EQUALS", "DUPLICATE_CHECK");
+            "ROW_EXPRESSION", "EXISTS_IN_TABLE", "RELATION_EXISTS",
+            "FIELD_EQUALS", "AGGREGATION_EQUALS", "DUPLICATE_CHECK");
 
     private final RuleDefinitionRepository ruleRepository;
     private final RuleBindingRepository bindingRepository;

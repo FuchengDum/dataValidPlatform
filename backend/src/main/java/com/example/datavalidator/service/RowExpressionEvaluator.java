@@ -36,7 +36,27 @@ class RowExpressionEvaluator {
     }
 
     static boolean matches(Object rawPredicate, DataRow row) {
-        return evaluateCondition(asMap(rawPredicate), row).isSatisfied();
+        Map<String, Object> predicate = asMap(rawPredicate);
+        if (predicate.containsKey("and")) {
+            for (Object item : valuesAsObjects(predicate.get("and"))) {
+                if (!matches(item, row)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (predicate.containsKey("or")) {
+            for (Object item : valuesAsObjects(predicate.get("or"))) {
+                if (matches(item, row)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (predicate.containsKey("not")) {
+            return !matches(predicate.get("not"), row);
+        }
+        return evaluateCondition(predicate, row).isSatisfied();
     }
 
     static void validate(Object rawConditions, List<String> headers) {
@@ -124,6 +144,21 @@ class RowExpressionEvaluator {
             throw new BadRequestException(formatMessage);
         }
         Map<String, Object> predicate = (Map<String, Object>) rawPredicate;
+        if (predicate.containsKey("and") || predicate.containsKey("or")) {
+            Object children = predicate.containsKey("and") ? predicate.get("and") : predicate.get("or");
+            List<Object> predicates = valuesAsObjects(children);
+            if (predicates.isEmpty()) {
+                throw new BadRequestException(formatMessage);
+            }
+            for (Object item : predicates) {
+                validatePredicate(item, headers, formatMessage, operatorMessage);
+            }
+            return;
+        }
+        if (predicate.containsKey("not")) {
+            validatePredicate(predicate.get("not"), headers, formatMessage, operatorMessage);
+            return;
+        }
         String operator = stringValue(predicate.get("operator"));
         if (!PREDICATE_OPERATORS.contains(operator)) {
             throw new BadRequestException(operatorMessage + operator);
@@ -171,9 +206,9 @@ class RowExpressionEvaluator {
     }
 
     private static ExpressionValue evaluateConditionalNode(Map<String, Object> node, DataRow row) {
-        Result predicate = evaluateCondition(asMap(node.get("if")), row);
-        ExpressionValue selected = evaluateNode(predicate.isSatisfied() ? node.get("then") : node.get("else"), row);
-        String text = "if " + predicate.getFailedCondition() + " then "
+        boolean matched = matches(node.get("if"), row);
+        ExpressionValue selected = evaluateNode(matched ? node.get("then") : node.get("else"), row);
+        String text = "if " + predicateText(node.get("if")) + " then "
                 + expressionText(node.get("then")) + " else " + expressionText(node.get("else"));
         return new ExpressionValue(text, selected.rawValue, selected.decimal, selected.firstField());
     }
@@ -209,13 +244,38 @@ class RowExpressionEvaluator {
             return stringValue(literal);
         }
         if (node.containsKey("if")) {
-            return "if " + expressionText(asMap(node.get("if")).get("left")) + " "
-                    + stringValue(asMap(node.get("if")).get("operator")) + " "
-                    + expressionText(asMap(node.get("if")).get("right")) + " then "
+            return "if " + predicateText(node.get("if")) + " then "
                     + expressionText(node.get("then")) + " else " + expressionText(node.get("else"));
         }
         return expressionText(node.get("left")) + " " + stringValue(node.get("op")) + " "
                 + expressionText(node.get("right"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String predicateText(Object rawPredicate) {
+        if (!(rawPredicate instanceof Map)) {
+            return "未知条件";
+        }
+        Map<String, Object> predicate = (Map<String, Object>) rawPredicate;
+        if (predicate.containsKey("and")) {
+            return joinPredicateTexts(predicate.get("and"), " AND ");
+        }
+        if (predicate.containsKey("or")) {
+            return joinPredicateTexts(predicate.get("or"), " OR ");
+        }
+        if (predicate.containsKey("not")) {
+            return "NOT (" + predicateText(predicate.get("not")) + ")";
+        }
+        return conditionText(expressionText(predicate.get("left")),
+                stringValue(predicate.get("operator")), expressionText(predicate.get("right")));
+    }
+
+    private static String joinPredicateTexts(Object rawPredicates, String delimiter) {
+        List<String> texts = new ArrayList<>();
+        for (Object item : valuesAsObjects(rawPredicates)) {
+            texts.add(predicateText(item));
+        }
+        return String.join(delimiter, texts);
     }
 
     private static Optional<BigDecimal> calculate(ExpressionValue left, String operator, ExpressionValue right) {
@@ -289,6 +349,13 @@ class RowExpressionEvaluator {
             result.add(stringValue(item));
         }
         return result;
+    }
+
+    private static List<Object> valuesAsObjects(Object rawValue) {
+        if (!(rawValue instanceof List)) {
+            return Collections.singletonList(rawValue);
+        }
+        return new ArrayList<>((List<?>) rawValue);
     }
 
     private static String conditionText(String left, String operator, String right) {

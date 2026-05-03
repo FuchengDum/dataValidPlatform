@@ -233,6 +233,95 @@ class TemplateRuleExecutorTest {
     }
 
     @Test
+    void relationExistsTemplateSupportsFilteredExistence() {
+        DataTable orders = table("t_order", "订单ID",
+                row("ORD001", "订单ID", "ORD001", "订单状态", "已支付"),
+                row("ORD002", "订单ID", "ORD002", "订单状态", "已发货"),
+                row("ORD003", "订单ID", "ORD003", "订单状态", "待支付"));
+        DataTable payments = table("t_payment", "支付ID",
+                row("PAY001", "支付ID", "PAY001", "订单ID", "ORD001", "支付状态", "支付成功"),
+                row("PAY002", "支付ID", "PAY002", "订单ID", "ORD002", "支付状态", "支付失败"));
+        RuleBinding binding = template("R021", "RELATION_EXISTS")
+                .param("source", "t_order")
+                .param("target", "t_payment")
+                .param("keys", Arrays.asList(relationKey("订单ID", "订单ID")))
+                .param("sourceWhere", condition(field("订单状态"), "in",
+                        Arrays.asList("已支付", "已发货", "已完成")))
+                .param("targetWhere", condition(field("支付状态"), "==", literal("支付成功")))
+                .param("expectExists", true)
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R021", "订单支付状态一致性"),
+                tables(orders, payments), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("ORD002");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("t_order.订单ID=ORD002");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("t_payment 中存在匹配记录");
+    }
+
+    @Test
+    void relationExistsTemplateSupportsAntiExistence() {
+        DataTable logs = table("t_inventory_log", "流水ID",
+                row("LOG001", "流水ID", "LOG001", "商品ID", "P001", "变动类型", "出库"),
+                row("LOG002", "流水ID", "LOG002", "商品ID", "P002", "变动类型", "出库"),
+                row("LOG003", "流水ID", "LOG003", "商品ID", "P001", "变动类型", "入库"));
+        DataTable products = table("t_product", "商品ID",
+                row("P001", "商品ID", "P001", "上架状态", "已下架"),
+                row("P002", "商品ID", "P002", "上架状态", "上架"));
+        RuleBinding binding = template("R028", "RELATION_EXISTS")
+                .param("source", "t_inventory_log")
+                .param("target", "t_product")
+                .param("keys", Arrays.asList(relationKey("商品ID", "商品ID")))
+                .param("sourceWhere", condition(field("变动类型"), "==", literal("出库")))
+                .param("targetWhere", condition(field("上架状态"), "==", literal("已下架")))
+                .param("expectExists", false)
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R028", "下架商品出库校验"),
+                tables(logs, products), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("LOG001");
+        assertThat(findings.get(0).getActualValue()).contains("t_inventory_log.商品ID=P001", "t_product.商品ID=P001");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("t_product 中不应存在匹配记录");
+    }
+
+    @Test
+    void relationExistsTemplateSupportsSourceExistsAndCompositeKeys() {
+        DataTable items = table("t_order_item", "明细ID",
+                row("ITEM001", "明细ID", "ITEM001", "订单ID", "ORD001", "商品ID", "P001", "数量", "2"),
+                row("ITEM002", "明细ID", "ITEM002", "订单ID", "ORD002", "商品ID", "P002", "数量", "1"));
+        DataTable orders = table("t_order", "订单ID",
+                row("ORD001", "订单ID", "ORD001", "订单状态", "已支付"),
+                row("ORD002", "订单ID", "ORD002", "订单状态", "待支付"));
+        DataTable logs = table("t_inventory_log", "流水ID",
+                row("LOG001", "流水ID", "LOG001", "关联订单ID", "ORD002", "商品ID", "P002",
+                        "变动数量", "1", "变动类型", "出库"));
+        RuleBinding binding = template("R022", "RELATION_EXISTS")
+                .param("source", "t_order_item")
+                .param("target", "t_inventory_log")
+                .param("keys", Arrays.asList(
+                        relationKey("订单ID", "关联订单ID"),
+                        relationKey("商品ID", "商品ID"),
+                        relationKey("数量", "变动数量")))
+                .param("targetWhere", condition(field("变动类型"), "==", literal("出库")))
+                .param("sourceExists", sourceExists("t_order",
+                        Arrays.asList(relationKey("订单ID", "订单ID")),
+                        condition(field("订单状态"), "in", Arrays.asList("已支付", "已发货", "已完成"))))
+                .param("expectExists", true)
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R022", "订单库存扣减一致性"),
+                tables(items, orders, logs), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("ITEM001");
+        assertThat(findings.get(0).getActualValue()).contains("订单ID=ORD001", "商品ID=P001", "数量=2");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("t_inventory_log 中存在匹配记录");
+    }
+
+    @Test
     void fieldEqualsTemplateComparesRelatedRows() {
         DataTable payments = table("payment", "支付ID",
                 row("P001", "支付ID", "P001", "订单ID", "O001", "用户ID", "U001"),
@@ -423,6 +512,21 @@ class TemplateRuleExecutorTest {
     private Map<String, Object> when(Map<String, Object> condition, Object predicate) {
         condition.put("when", predicate);
         return condition;
+    }
+
+    private Map<String, Object> sourceExists(String target, List<Map<String, Object>> keys, Object targetWhere) {
+        Map<String, Object> sourceExists = new LinkedHashMap<>();
+        sourceExists.put("target", target);
+        sourceExists.put("keys", keys);
+        sourceExists.put("targetWhere", targetWhere);
+        return sourceExists;
+    }
+
+    private Map<String, Object> relationKey(String sourceField, String targetField) {
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put("sourceField", sourceField);
+        key.put("targetField", targetField);
+        return key;
     }
 
     private Map<String, Object> field(String fieldName) {

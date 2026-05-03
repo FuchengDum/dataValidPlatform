@@ -143,6 +143,18 @@ class RuleTemplateSemanticMapperTest {
         }
     }
 
+    @Test
+    void mapsSecondStageRelationRulesToRelationExistsTemplate() {
+        Map<String, List<String>> tableFields = case5Tables();
+        for (ExpectedMapping expected : stageTwoRelationMappings()) {
+            RuleTemplateSemanticMatch match = mapper.recommend(expected.rule, tableFields);
+
+            assertThat(match.isApplicable()).as(expected.rule.getRuleId()).isTrue();
+            assertThat(match.getTemplateCode()).as(expected.rule.getRuleId()).isEqualTo("RELATION_EXISTS");
+            assertThat(match.getTemplateParams()).as(expected.rule.getRuleId()).containsKey("keys");
+        }
+    }
+
     private RuleDefinitionEntity rule(String ruleId, String ruleName, String description,
                                       String pseudoLogic, String applicableTables) {
         RuleDefinitionEntity entity = new RuleDefinitionEntity();
@@ -245,6 +257,33 @@ class RuleTemplateSemanticMapperTest {
                 expected("R029", "同一订单重复支付校验", "同一订单不应有多条支付成功记录(防重复支付)",
                         "SELECT 订单ID, COUNT(*) AS 支付次数 FROM t_payment WHERE 支付状态='支付成功' GROUP BY 订单ID HAVING COUNT(*)>1",
                         "t_payment", "DUPLICATE_CHECK")
+        );
+    }
+
+    private List<ExpectedMapping> stageTwoRelationMappings() {
+        return Arrays.asList(
+                expected("R021", "订单-支付状态一致性",
+                        "已支付/已发货/已完成订单必须有支付成功记录；已取消订单不应有支付成功记录(除非全额退款)",
+                        "SELECT o.* FROM t_order o WHERE o.订单状态 IN ('已支付','已发货','已完成') "
+                                + "AND NOT EXISTS(SELECT 1 FROM t_payment p WHERE p.订单ID=o.订单ID AND p.支付状态='支付成功')",
+                        "t_order,t_payment", "RELATION_EXISTS"),
+                expected("R022", "订单-库存扣减一致性",
+                        "已支付订单的每条明细应有对应的库存出库记录，出库数量应与明细数量一致",
+                        "SELECT i.* FROM t_order_item i JOIN t_order o ON i.订单ID=o.订单ID "
+                                + "WHERE o.订单状态 IN ('已支付','已发货','已完成') "
+                                + "AND NOT EXISTS(SELECT 1 FROM t_inventory_log l WHERE l.关联订单ID=i.订单ID "
+                                + "AND l.商品ID=i.商品ID AND l.变动数量=i.数量)",
+                        "t_order_item,t_inventory_log", "RELATION_EXISTS"),
+                expected("R026", "订单状态流转校验",
+                        "已取消订单的实付金额应为0(无支付)或退款金额等于支付金额(已退款)",
+                        "SELECT o.* FROM t_order o JOIN t_payment p ON o.订单ID=p.订单ID "
+                                + "WHERE o.订单状态='已取消' AND p.退款金额=0 AND p.支付状态='支付成功'",
+                        "t_order,t_payment", "RELATION_EXISTS"),
+                expected("R028", "下架商品出库校验",
+                        "已下架商品不应有出库记录",
+                        "SELECT l.* FROM t_inventory_log l JOIN t_product p ON l.商品ID=p.商品ID "
+                                + "WHERE p.上架状态='已下架' AND l.变动类型='出库'",
+                        "t_inventory_log,t_product", "RELATION_EXISTS")
         );
     }
 

@@ -211,6 +211,13 @@ R006 金额关系不再作为孤立硬编码规则处理。后续应通过结构
 | R029 | `DUPLICATE_ASSERT` | `where 支付状态 == 支付成功`, `groupBy=[订单ID]`, `count <= 1` | 条件分组次数约束。 |
 | R030 | `AGGREGATE_ASSERT` | 按日期分别汇总订单金额和明细小计金额后比较。 | 指标层多表聚合一致。 |
 
+阶段性落地状态：
+
+1. `ROW_EXPRESSION` 已作为 `ROW_ASSERT` 的当前执行形态，支持 `when`、条件分支和字段间计算。
+2. `RELATION_EXISTS` 已作为关系存在 DSL 的当前执行形态，支持单 key、复合 key、`sourceWhere`、`targetWhere`、`sourceExists` 前置关联过滤，以及 `expectExists=false` 的反向不存在校验。
+3. R021、R022、R026、R028 已可通过 `RELATION_EXISTS` 统一表达，不再依赖规则编号特例。
+4. R030 仍需要下一阶段补齐跨表分组聚合比较能力，即 `AGGREGATE_ASSERT` 的一等执行形态。
+
 ### 3.6 后续统一 DSL 方向
 
 现有模板可以继续保留，但长期应向统一 DSL 收敛。推荐结果不直接依赖业务规则编号，而是输出以下几类结构化断言。
@@ -295,6 +302,38 @@ R006 金额关系不再作为孤立硬编码规则处理。后续应通过结构
 }
 ```
 
+关系存在断言：
+
+```json
+{
+  "type": "RELATION_EXISTS",
+  "source": "t_order_item",
+  "target": "t_inventory_log",
+  "keys": [
+    { "sourceField": "订单ID", "targetField": "关联订单ID" },
+    { "sourceField": "商品ID", "targetField": "商品ID" },
+    { "sourceField": "数量", "targetField": "变动数量" }
+  ],
+  "sourceExists": {
+    "target": "t_order",
+    "keys": [
+      { "sourceField": "订单ID", "targetField": "订单ID" }
+    ],
+    "targetWhere": {
+      "left": { "field": "订单状态" },
+      "operator": "in",
+      "right": ["已支付", "已发货", "已完成"]
+    }
+  },
+  "targetWhere": {
+    "left": { "field": "变动类型" },
+    "operator": "==",
+    "right": { "value": "出库" }
+  },
+  "expectExists": true
+}
+```
+
 聚合断言：
 
 ```json
@@ -345,6 +384,7 @@ NUMERIC_TYPE
 FIELD_EXPRESSION
 ROW_EXPRESSION
 EXISTS_IN_TABLE
+RELATION_EXISTS
 FIELD_EQUALS
 AGGREGATION_EQUALS
 DUPLICATE_CHECK
@@ -356,9 +396,10 @@ DUPLICATE_CHECK
 2. `FIELD_EXPRESSION`：`tableName`, `expression`。
 3. `ROW_EXPRESSION`：`tableName`, `conditions`，条件中包含 `left`、`operator`、`right`。
 4. `EXISTS_IN_TABLE`：`source`, `target`, `key`。
-5. `FIELD_EQUALS`：`source`, `target`, `key`, `sourceField`, `targetField`。
-6. `AGGREGATION_EQUALS`：`source`, `target`, `groupBy`, `sum`, `targetField`, 可选 `targetKey`。
-7. `DUPLICATE_CHECK`：`tableName`, `groupBy`。
+5. `RELATION_EXISTS`：`source`, `target`, `keys`, `expectExists`，可选 `sourceWhere`, `targetWhere`, `sourceExists`。
+6. `FIELD_EQUALS`：`source`, `target`, `key`, `sourceField`, `targetField`。
+7. `AGGREGATION_EQUALS`：`source`, `target`, `groupBy`, `sum`, `targetField`, 可选 `targetKey`。
+8. `DUPLICATE_CHECK`：`tableName`, `groupBy`。
 
 ### 4.2 AI 与本地映射优先级
 

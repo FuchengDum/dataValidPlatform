@@ -203,6 +203,36 @@ class RuleBindingServiceTest {
     }
 
     @Test
+    void updateBindingAcceptsRelationExistsTemplateWithCompositeKeysAndFilters() {
+        RuleDefinitionEntity rule = rule("ds-1", "C011", "库存扣减存在性");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C011", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C011")).thenReturn(Optional.empty());
+        when(bindingRepository.save(any(RuleBindingEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order_item", "订单ID", "商品ID", "数量"),
+                table("ds-1", "t_inventory_log", "关联订单ID", "商品ID", "变动数量", "变动类型"),
+                table("ds-1", "t_order", "订单ID", "订单状态")));
+        RuleBindingService.BindingRequest request = request("RELATION_EXISTS")
+                .param("source", "t_order_item")
+                .param("target", "t_inventory_log")
+                .param("keys", Arrays.asList(
+                        relationKey("订单ID", "关联订单ID"),
+                        relationKey("商品ID", "商品ID"),
+                        relationKey("数量", "变动数量")))
+                .param("targetWhere", condition(field("变动类型"), "==", literal("出库")))
+                .param("sourceExists", sourceExists("t_order",
+                        Arrays.asList(relationKey("订单ID", "订单ID")),
+                        condition(field("订单状态"), "in", Arrays.asList("已支付", "已发货", "已完成"))))
+                .param("expectExists", true)
+                .build();
+
+        RuleBindingService.BindingView saved = service.updateBinding("ds-1", "C011", request);
+
+        assertThat(saved.getTemplateCode()).isEqualTo("RELATION_EXISTS");
+        assertThat(saved.getTemplateParams()).containsEntry("source", "t_order_item");
+    }
+
+    @Test
     void updateBindingRejectsExpressionTemplateWithUnknownField() {
         RuleDefinitionEntity rule = rule("ds-1", "C004", "表达式校验");
         when(ruleRepository.findById(new RuleDefinitionEntity.Key("C004", "ds-1"))).thenReturn(Optional.of(rule));
@@ -314,9 +344,30 @@ class RuleBindingServiceTest {
         return condition;
     }
 
+    private Map<String, Object> relationKey(String sourceField, String targetField) {
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put("sourceField", sourceField);
+        key.put("targetField", targetField);
+        return key;
+    }
+
+    private Map<String, Object> sourceExists(String target, List<Map<String, Object>> keys, Object targetWhere) {
+        Map<String, Object> sourceExists = new LinkedHashMap<>();
+        sourceExists.put("target", target);
+        sourceExists.put("keys", keys);
+        sourceExists.put("targetWhere", targetWhere);
+        return sourceExists;
+    }
+
     private Map<String, Object> field(String fieldName) {
         Map<String, Object> expression = new LinkedHashMap<>();
         expression.put("field", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> literal(Object value) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("literal", value);
         return expression;
     }
 

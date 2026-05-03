@@ -38,6 +38,8 @@ public class TemplateRuleExecutor {
                 return rowExpression(rule, table(tables, params), params.get("conditions"));
             case "EXISTS_IN_TABLE":
                 return existsInTable(rule, tables, params);
+            case "RELATION_EXISTS":
+                return relationExists(rule, tables, params);
             case "FIELD_EQUALS":
                 return fieldEquals(rule, tables, params);
             case "AGGREGATION_EQUALS":
@@ -155,6 +157,76 @@ public class TemplateRuleExecutor {
             }
         }
         return findings;
+    }
+
+    private List<ValidationFinding> relationExists(RuleDefinition rule, Map<String, DataTable> tables,
+                                                   Map<String, Object> params) {
+        DataTable source = tables.get(asString(params.get("source")));
+        DataTable target = tables.get(asString(params.get("target")));
+        List<RelationKey> keys = relationKeys(params.get("keys"), asString(params.get("key")),
+                asString(params.get("targetKey")));
+        boolean expectExists = !Boolean.FALSE.equals(params.get("expectExists"));
+        if (source == null || target == null || keys.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (DataRow row : source.getRows()) {
+            if (!matchesWhere(params.get("sourceWhere"), row)
+                    || !matchesSourceExists(params.get("sourceExists"), row, tables)) {
+                continue;
+            }
+            Optional<DataRow> matched = firstMatchedTarget(target, keys, row, params.get("targetWhere"));
+            if (expectExists && !matched.isPresent()) {
+                findings.add(finding(rule, source, row, keys.get(0).sourceField,
+                        source.getLogicalName() + "." + keySummary(row, keys, true),
+                        target.getLogicalName() + " 中存在匹配记录",
+                        "关联记录不存在", "RELATION"));
+            }
+            if (!expectExists && matched.isPresent()) {
+                findings.add(finding(rule, source, row, keys.get(0).sourceField,
+                        source.getLogicalName() + "." + keySummary(row, keys, true)
+                                + "；" + target.getLogicalName() + "." + keySummary(matched.get(), keys, false),
+                        target.getLogicalName() + " 中不应存在匹配记录",
+                        "不应存在关联记录", "RELATION"));
+            }
+        }
+        return findings;
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean matchesSourceExists(Object rawSourceExists, DataRow sourceRow, Map<String, DataTable> tables) {
+        if (!(rawSourceExists instanceof Map)) {
+            return true;
+        }
+        Map<String, Object> sourceExists = (Map<String, Object>) rawSourceExists;
+        DataTable target = tables.get(asString(sourceExists.get("target")));
+        List<RelationKey> keys = relationKeys(sourceExists.get("keys"), asString(sourceExists.get("key")),
+                asString(sourceExists.get("targetKey")));
+        return target != null && firstMatchedTarget(target, keys, sourceRow, sourceExists.get("targetWhere")).isPresent();
+    }
+
+    private Optional<DataRow> firstMatchedTarget(DataTable target, List<RelationKey> keys,
+                                                DataRow sourceRow, Object targetWhere) {
+        for (DataRow targetRow : target.getRows()) {
+            if (keysMatch(sourceRow, targetRow, keys) && matchesWhere(targetWhere, targetRow)) {
+                return Optional.of(targetRow);
+            }
+        }
+        return Optional.empty();
+    }
+
+    private boolean keysMatch(DataRow sourceRow, DataRow targetRow, List<RelationKey> keys) {
+        for (RelationKey key : keys) {
+            String sourceValue = sourceRow.value(key.sourceField);
+            if (ValueParsers.isBlank(sourceValue) || !sourceValue.equals(targetRow.value(key.targetField))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean matchesWhere(Object where, DataRow row) {
+        return !(where instanceof Map) || RowExpressionEvaluator.matches(where, row);
     }
 
     private List<ValidationFinding> fieldEquals(RuleDefinition rule, Map<String, DataTable> tables,
@@ -289,6 +361,15 @@ public class TemplateRuleExecutor {
         return fields.stream().map(row::value).collect(Collectors.joining("\u001F"));
     }
 
+    private String keySummary(DataRow row, List<RelationKey> keys, boolean sourceSide) {
+        return keys.stream()
+                .map(key -> {
+                    String field = sourceSide ? key.sourceField : key.targetField;
+                    return field + "=" + row.value(field);
+                })
+                .collect(Collectors.joining("；"));
+    }
+
     private String formatDecimal(BigDecimal value) {
         return value.stripTrailingZeros().toPlainString();
     }
@@ -311,6 +392,38 @@ public class TemplateRuleExecutor {
             return Collections.singletonList(single);
         }
         return Collections.emptyList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<RelationKey> relationKeys(Object rawKeys, String fallbackKey, String fallbackTargetKey) {
+        List<RelationKey> result = new ArrayList<>();
+        if (rawKeys instanceof List) {
+            for (Object rawKey : (List<?>) rawKeys) {
+                if (rawKey instanceof Map) {
+                    Map<String, Object> key = (Map<String, Object>) rawKey;
+                    String sourceField = asString(key.get("sourceField"));
+                    String targetField = asString(key.get("targetField"));
+                    if (!ValueParsers.isBlank(sourceField) && !ValueParsers.isBlank(targetField)) {
+                        result.add(new RelationKey(sourceField, targetField));
+                    }
+                }
+            }
+        }
+        if (result.isEmpty() && !ValueParsers.isBlank(fallbackKey)) {
+            result.add(new RelationKey(fallbackKey,
+                    ValueParsers.isBlank(fallbackTargetKey) ? fallbackKey : fallbackTargetKey));
+        }
+        return result;
+    }
+
+    private static class RelationKey {
+        private final String sourceField;
+        private final String targetField;
+
+        RelationKey(String sourceField, String targetField) {
+            this.sourceField = sourceField;
+            this.targetField = targetField;
+        }
     }
 
 }

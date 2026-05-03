@@ -34,6 +34,9 @@ class TemplateBindingValidator {
             case "EXISTS_IN_TABLE":
                 validateExistsInTable(params, headersByTable);
                 break;
+            case "RELATION_EXISTS":
+                validateRelationExists(params, headersByTable);
+                break;
             case "FIELD_EQUALS":
                 validateFieldEquals(params, headersByTable);
                 break;
@@ -97,6 +100,21 @@ class TemplateBindingValidator {
         requireField(targetHeaders, key);
     }
 
+    private static void validateRelationExists(Map<String, Object> params, Map<String, List<String>> headersByTable) {
+        String source = requireParam(params, "source");
+        String target = requireParam(params, "target");
+        List<String> sourceHeaders = requireTable(headersByTable, source);
+        List<String> targetHeaders = requireTable(headersByTable, target);
+        requireRelationKeys(params, sourceHeaders, targetHeaders);
+        if (params.containsKey("sourceWhere")) {
+            RowExpressionEvaluator.validatePredicate(params.get("sourceWhere"), sourceHeaders);
+        }
+        if (params.containsKey("targetWhere")) {
+            RowExpressionEvaluator.validatePredicate(params.get("targetWhere"), targetHeaders);
+        }
+        validateSourceExists(params.get("sourceExists"), headersByTable, sourceHeaders);
+    }
+
     private static void validateFieldEquals(Map<String, Object> params, Map<String, List<String>> headersByTable) {
         List<String> sourceHeaders = requireTable(headersByTable, requireParam(params, "source"));
         List<String> targetHeaders = requireTable(headersByTable, requireParam(params, "target"));
@@ -129,6 +147,61 @@ class TemplateBindingValidator {
         }
         for (String field : fields) {
             requireField(headers, field);
+        }
+        if (params.containsKey("where")) {
+            RowExpressionEvaluator.validatePredicate(params.get("where"), headers);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void validateSourceExists(Object rawSourceExists, Map<String, List<String>> headersByTable,
+                                             List<String> sourceHeaders) {
+        if (rawSourceExists == null) {
+            return;
+        }
+        if (!(rawSourceExists instanceof Map)) {
+            throw new BadRequestException("模板参数 sourceExists 格式不支持");
+        }
+        Map<String, Object> sourceExists = (Map<String, Object>) rawSourceExists;
+        List<String> targetHeaders = requireTable(headersByTable, requireParam(sourceExists, "target"));
+        requireRelationKeys(sourceExists, sourceHeaders, targetHeaders);
+        if (sourceExists.containsKey("targetWhere")) {
+            RowExpressionEvaluator.validatePredicate(sourceExists.get("targetWhere"), targetHeaders);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void requireRelationKeys(Map<String, Object> params, List<String> sourceHeaders,
+                                            List<String> targetHeaders) {
+        int matchedKeys = 0;
+        Object rawKeys = params.get("keys");
+        if (rawKeys instanceof List) {
+            for (Object rawKey : (List<?>) rawKeys) {
+                if (!(rawKey instanceof Map)) {
+                    throw new BadRequestException("模板参数 keys 格式不支持");
+                }
+                Map<String, Object> key = (Map<String, Object>) rawKey;
+                String sourceField = requireParam(key, "sourceField");
+                String targetField = requireParam(key, "targetField");
+                requireField(sourceHeaders, sourceField);
+                requireField(targetHeaders, targetField);
+                matchedKeys++;
+            }
+        }
+        if (matchedKeys == 0) {
+            String key = asString(params.get("key"));
+            if (!isBlank(key)) {
+                String targetKey = asString(params.get("targetKey"));
+                if (isBlank(targetKey)) {
+                    targetKey = key;
+                }
+                requireField(sourceHeaders, key);
+                requireField(targetHeaders, targetKey);
+                matchedKeys++;
+            }
+        }
+        if (matchedKeys == 0) {
+            throw new BadRequestException("模板参数 keys 不能为空");
         }
     }
 
@@ -195,4 +268,5 @@ class TemplateBindingValidator {
     private static boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
     }
+
 }

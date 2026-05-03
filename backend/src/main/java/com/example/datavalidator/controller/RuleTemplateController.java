@@ -23,6 +23,7 @@ public class RuleTemplateController {
                 template("FIELD_EXPRESSION", "字段表达式校验", "tableName", "expression"),
                 template("ROW_EXPRESSION", "行表达式校验", "tableName", "conditions"),
                 template("EXISTS_IN_TABLE", "跨表存在性校验", "source", "target", "key"),
+                template("RELATION_EXISTS", "关系存在性校验", "source", "target", "keys", "expectExists"),
                 template("FIELD_EQUALS", "跨表字段一致性校验", "source", "target", "key", "sourceField", "targetField"),
                 template("AGGREGATION_EQUALS", "聚合一致性校验", "source", "target", "groupBy", "sum", "targetField"),
                 template("DUPLICATE_CHECK", "重复记录校验", "tableName", "groupBy")));
