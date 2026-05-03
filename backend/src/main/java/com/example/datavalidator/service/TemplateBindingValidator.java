@@ -68,6 +68,9 @@ class TemplateBindingValidator {
         if (!hasField) {
             throw new BadRequestException("表达式未引用有效字段");
         }
+        if (!TemplateExpressionEvaluator.isValidExpression(expression, headers)) {
+            throw new BadRequestException("表达式格式不支持: " + expression);
+        }
     }
 
     private static void validateExistsInTable(Map<String, Object> params, Map<String, List<String>> headersByTable) {

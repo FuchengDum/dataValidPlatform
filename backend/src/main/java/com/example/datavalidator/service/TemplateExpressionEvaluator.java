@@ -29,6 +29,24 @@ class TemplateExpressionEvaluator {
         return Optional.ofNullable(first);
     }
 
+    static boolean isValidExpression(String expression, List<String> headers) {
+        if (ValueParsers.isBlank(expression)) {
+            return false;
+        }
+        for (String condition : expression.split("\\s+&&\\s+")) {
+            Optional<ComparisonExpression> parsed = parseComparison(condition);
+            if (!parsed.isPresent()) {
+                return false;
+            }
+            ComparisonExpression comparison = parsed.get();
+            if (!headers.contains(comparison.leftField)
+                    || !isValidArithmeticExpression(comparison.rightExpression, headers)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static Optional<Result> evaluateSingle(String expression, DataRow row) {
         Optional<ComparisonExpression> parsed = parseComparison(expression);
         if (!parsed.isPresent()) {
@@ -92,6 +110,30 @@ class TemplateExpressionEvaluator {
             }
         }
         return Optional.of(applyPlusMinus(terms, plusMinus, term));
+    }
+
+    private static boolean isValidArithmeticExpression(String expression, List<String> headers) {
+        if (ValueParsers.isBlank(expression)) {
+            return false;
+        }
+        String[] tokens = expression.trim().split("\\s+");
+        if (tokens.length == 0 || tokens.length % 2 == 0 || !isFieldOrNumber(tokens[0], headers)) {
+            return false;
+        }
+        for (int i = 1; i < tokens.length; i += 2) {
+            if (!isArithmeticOperator(tokens[i]) || !isFieldOrNumber(tokens[i + 1], headers)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isArithmeticOperator(String token) {
+        return "+".equals(token) || "-".equals(token) || "*".equals(token) || "/".equals(token);
+    }
+
+    private static boolean isFieldOrNumber(String token, List<String> headers) {
+        return headers.contains(token) || ValueParsers.decimal(token).isPresent();
     }
 
     private static BigDecimal applyPlusMinus(List<BigDecimal> terms, List<String> plusMinus, BigDecimal lastTerm) {

@@ -210,6 +210,40 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingFallsBackWhenR006ModelExpressionMissesRequiredCondition() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order\","
+                + "\"expression\":\"实付金额 <= 订单金额\"},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐弱金额关系\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R006"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EXPRESSION");
+        assertThat(result.getTemplateParams()).containsEntry("expression",
+                "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+    }
+
+    @Test
+    void recommendRuleBindingFallsBackWhenModelExpressionIsNotExecutable() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order\","
+                + "\"expression\":\"用户ID 订单状态\"},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐非法表达式\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R002"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
+        assertThat(result.getWarnings()).contains("模型推荐未通过模板白名单或字段校验，已降级为本地推荐");
+    }
+
+    @Test
     void recommendRuleBindingUsesLocalRecommendationWhenModelUnavailable() {
         AiAssistService service = recommendationService(Optional.empty());
 

@@ -197,6 +197,23 @@ class RuleBindingServiceTest {
                 "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
     }
 
+    @Test
+    void updateBindingRejectsExpressionTemplateThatCannotBeParsed() {
+        RuleDefinitionEntity rule = rule("ds-1", "C006", "非法表达式校验");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C006", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C006")).thenReturn(Optional.empty());
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order", "订单金额", "优惠金额", "实付金额")));
+        RuleBindingService.BindingRequest request = request("FIELD_EXPRESSION")
+                .param("tableName", "t_order")
+                .param("expression", "实付金额 订单金额 优惠金额")
+                .build();
+
+        assertThatThrownBy(() -> service.updateBinding("ds-1", "C006", request))
+                .isInstanceOf(com.example.datavalidator.exception.BadRequestException.class)
+                .hasMessageContaining("表达式格式不支持");
+    }
+
     private RuleDefinitionEntity rule(String datasetId, String ruleId, String ruleName) {
         RuleDefinitionEntity entity = new RuleDefinitionEntity();
         entity.setDatasetId(datasetId);

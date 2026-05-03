@@ -35,6 +35,8 @@ public class AiAssistService {
     private static final Pattern SQL_COMMENT_PATTERN = Pattern.compile("(?s)(--|/\\*|\\*/)");
     private static final String SOURCE_LOCAL = "LOCAL_RULE_BASED";
     private static final String SOURCE_AI = "OPENAI_COMPATIBLE";
+    private static final String R006_AMOUNT_BALANCE = "实付金额 == 订单金额 - 优惠金额";
+    private static final String R006_AMOUNT_LIMIT = "实付金额 <= 订单金额";
     private static final List<String> SUPPORTED_RECOMMENDATION_TEMPLATES = Arrays.asList(
             "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION");
 
@@ -160,7 +162,7 @@ public class AiAssistService {
             result.setTemplateCode("FIELD_EXPRESSION");
             result.setConfidence("HIGH");
             params.put("tableName", tableName);
-            params.put("expression", "实付金额 == 订单金额 - 优惠金额 && 实付金额 <= 订单金额");
+            params.put("expression", R006_AMOUNT_BALANCE + " && " + R006_AMOUNT_LIMIT);
             result.setExplanation("基于 R006 内置规则语义生成字段表达式模板，请人工确认后应用。");
         } else {
             result.setTemplateCode(resolveLocalTemplateCode(rule));
@@ -389,15 +391,17 @@ public class AiAssistService {
         if (!SUPPORTED_RECOMMENDATION_TEMPLATES.contains(result.getTemplateCode())) {
             return false;
         }
-        if ("R006".equals(rule.getRuleId()) && !"FIELD_EXPRESSION".equals(result.getTemplateCode())) {
-            return false;
-        }
         String tableName = objectString(result.getTemplateParams().get("tableName"));
         if (!tableFields.containsKey(tableName)) {
             return false;
         }
         if ("FIELD_EXPRESSION".equals(result.getTemplateCode())) {
-            return isValidFieldExpression(result, tableFields.getOrDefault(tableName, Collections.emptyList()));
+            String expression = objectString(result.getTemplateParams().get("expression"));
+            return isValidFieldExpression(expression, tableFields.getOrDefault(tableName, Collections.emptyList()))
+                    && isValidRuleSpecificExpression(rule, expression);
+        }
+        if ("R006".equals(rule.getRuleId())) {
+            return false;
         }
         List<String> fields = objectStringList(result.getTemplateParams().get("fields"));
         if (fields.isEmpty()) {
@@ -407,8 +411,7 @@ public class AiAssistService {
         return headers.containsAll(fields);
     }
 
-    private boolean isValidFieldExpression(RuleBindingRecommendationResult result, List<String> headers) {
-        String expression = objectString(result.getTemplateParams().get("expression"));
+    private boolean isValidFieldExpression(String expression, List<String> headers) {
         if (isBlank(expression)) {
             return false;
         }
@@ -422,7 +425,18 @@ public class AiAssistService {
             }
             hasField = true;
         }
-        return hasField;
+        return hasField && TemplateExpressionEvaluator.isValidExpression(expression, headers);
+    }
+
+    private boolean isValidRuleSpecificExpression(RuleDefinitionEntity rule, String expression) {
+        if (!"R006".equals(rule.getRuleId())) {
+            return true;
+        }
+        List<String> conditions = new ArrayList<>();
+        for (String condition : expression.split("\\s+&&\\s+")) {
+            conditions.add(condition.trim().replaceAll("\\s+", " "));
+        }
+        return conditions.contains(R006_AMOUNT_BALANCE) && conditions.contains(R006_AMOUNT_LIMIT);
     }
 
     private boolean isExpressionOperator(String token) {
