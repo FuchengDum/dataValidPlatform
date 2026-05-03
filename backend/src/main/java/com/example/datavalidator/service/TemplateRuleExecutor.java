@@ -107,7 +107,7 @@ public class TemplateRuleExecutor {
                     TemplateExpressionEvaluator.evaluate(expression, row);
             if (result.isPresent() && !result.get().isSatisfied()) {
                 findings.add(finding(rule, table, row, result.get().getLeftField(),
-                        row.value(result.get().getLeftField()), result.get().getExpectedExpression(),
+                        result.get().getActualSummary(), result.get().getFailedCondition(),
                         expression + " 不成立", "CALCULATION"));
             }
         }

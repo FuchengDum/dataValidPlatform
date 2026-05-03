@@ -84,7 +84,8 @@ class TemplateRuleExecutorTest {
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("I002");
         assertThat(findings.get(0).getFieldName()).isEqualTo("小计金额");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("单价 * 数量");
+        assertThat(findings.get(0).getActualValue()).contains("小计金额=20", "单价 * 数量=24");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("小计金额 == 单价 * 数量");
     }
 
     @Test
@@ -103,8 +104,10 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(2);
         assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("ORD002", "ORD003");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("订单金额 - 优惠金额");
-        assertThat(findings.get(1).getExpectedValue()).isEqualTo("订单金额");
+        assertThat(findings.get(0).getActualValue()).contains("实付金额=95", "订单金额 - 优惠金额=90");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("实付金额 == 订单金额 - 优惠金额");
+        assertThat(findings.get(1).getActualValue()).contains("实付金额=110", "订单金额=100");
+        assertThat(findings.get(1).getExpectedValue()).isEqualTo("实付金额 <= 订单金额");
     }
 
     @Test

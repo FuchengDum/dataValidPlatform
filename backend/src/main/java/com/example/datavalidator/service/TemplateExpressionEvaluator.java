@@ -39,7 +39,8 @@ class TemplateExpressionEvaluator {
         Optional<BigDecimal> expected = evaluateArithmetic(comparison.rightExpression, row);
         boolean satisfied = actual.isPresent() && expected.isPresent()
                 && compare(actual.get(), expected.get(), comparison.operator);
-        return Optional.of(new Result(comparison.leftField, comparison.rightExpression, satisfied));
+        return Optional.of(new Result(comparison.leftField, row.value(comparison.leftField),
+                comparison.operator, comparison.rightExpression, formatValue(expected), satisfied));
     }
 
     private static Optional<ComparisonExpression> parseComparison(String expression) {
@@ -135,14 +136,28 @@ class TemplateExpressionEvaluator {
         }
     }
 
+    private static String formatValue(Optional<BigDecimal> value) {
+        if (!value.isPresent()) {
+            return "无法计算";
+        }
+        return value.get().stripTrailingZeros().toPlainString();
+    }
+
     static class Result {
         private final String leftField;
-        private final String expectedExpression;
+        private final String leftValue;
+        private final String operator;
+        private final String rightExpression;
+        private final String rightValue;
         private final boolean satisfied;
 
-        Result(String leftField, String expectedExpression, boolean satisfied) {
+        Result(String leftField, String leftValue, String operator, String rightExpression,
+               String rightValue, boolean satisfied) {
             this.leftField = leftField;
-            this.expectedExpression = expectedExpression;
+            this.leftValue = leftValue;
+            this.operator = operator;
+            this.rightExpression = rightExpression;
+            this.rightValue = rightValue;
             this.satisfied = satisfied;
         }
 
@@ -150,8 +165,12 @@ class TemplateExpressionEvaluator {
             return leftField;
         }
 
-        String getExpectedExpression() {
-            return expectedExpression;
+        String getActualSummary() {
+            return leftField + "=" + leftValue + "；" + rightExpression + "=" + rightValue;
+        }
+
+        String getFailedCondition() {
+            return leftField + " " + operator + " " + rightExpression;
         }
 
         boolean isSatisfied() {
