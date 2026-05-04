@@ -142,6 +142,29 @@ class RuleBindingServiceTest {
     }
 
     @Test
+    void updateBindingAcceptsAggregateAssertWithCrossTableGroupedAggregates() {
+        RuleDefinitionEntity rule = rule("ds-1", "C012", "按日期汇总一致");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C012", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C012")).thenReturn(Optional.empty());
+        when(bindingRepository.save(any(RuleBindingEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order_item", "统计日期", "小计金额"),
+                table("ds-1", "t_order", "统计日期", "订单金额")));
+        RuleBindingService.BindingRequest request = request("AGGREGATE_ASSERT")
+                .param("source", "t_order_item")
+                .param("target", "t_order")
+                .param("groupBy", Arrays.asList(relationKey("统计日期", "统计日期")))
+                .param("aggregate", aggregate("SUM", "小计金额"))
+                .param("assert", aggregateAssert("==", aggregate("SUM", "订单金额"), "0.01"))
+                .build();
+
+        RuleBindingService.BindingView saved = service.updateBinding("ds-1", "C012", request);
+
+        assertThat(saved.getExecutorType()).isEqualTo("TEMPLATE");
+        assertThat(saved.getTemplateCode()).isEqualTo("AGGREGATE_ASSERT");
+    }
+
+    @Test
     void updateBindingRejectsCrossTableTemplateWithUnknownField() {
         RuleDefinitionEntity rule = rule("ds-1", "C003", "存在性校验");
         when(ruleRepository.findById(new RuleDefinitionEntity.Key("C003", "ds-1"))).thenReturn(Optional.of(rule));
@@ -349,6 +372,21 @@ class RuleBindingServiceTest {
         key.put("sourceField", sourceField);
         key.put("targetField", targetField);
         return key;
+    }
+
+    private Map<String, Object> aggregate(String fn, String field) {
+        Map<String, Object> aggregate = new LinkedHashMap<>();
+        aggregate.put("fn", fn);
+        aggregate.put("field", field);
+        return aggregate;
+    }
+
+    private Map<String, Object> aggregateAssert(String operator, Object targetAggregate, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("aggregate", targetAggregate);
+        assertion.put("tolerance", tolerance);
+        return assertion;
     }
 
     private Map<String, Object> sourceExists(String target, List<Map<String, Object>> keys, Object targetWhere) {

@@ -15,6 +15,7 @@
    - `EXISTS_IN_TABLE`：跨表存在性。
    - `FIELD_EQUALS`：跨表字段一致。
    - `AGGREGATION_EQUALS`：分组汇总一致。
+   - `AGGREGATE_ASSERT`：结构化聚合断言。
    - `DUPLICATE_CHECK`：重复记录检查。
 4. `FIELD_EXPRESSION` 已支持多条件表达式，并已将异常详情调整为“计算明细 + 失败条件”。
 5. 绑定接口已对模板参数做表名、字段名和表达式可解析性校验。
@@ -216,7 +217,7 @@ R006 金额关系不再作为孤立硬编码规则处理。后续应通过结构
 1. `ROW_EXPRESSION` 已作为 `ROW_ASSERT` 的当前执行形态，支持 `when`、条件分支和字段间计算。
 2. `RELATION_EXISTS` 已作为关系存在 DSL 的当前执行形态，支持单 key、复合 key、`sourceWhere`、`targetWhere`、`sourceExists` 前置关联过滤，以及 `expectExists=false` 的反向不存在校验。
 3. R021、R022、R026、R028 已可通过 `RELATION_EXISTS` 统一表达，不再依赖规则编号特例。
-4. R030 仍需要下一阶段补齐跨表分组聚合比较能力，即 `AGGREGATE_ASSERT` 的一等执行形态。
+4. `AGGREGATE_ASSERT` 已作为聚合断言 DSL 的当前执行形态，支持分组汇总与目标字段或另一组汇总结果比较。
 
 ### 3.6 后续统一 DSL 方向
 
@@ -387,6 +388,7 @@ EXISTS_IN_TABLE
 RELATION_EXISTS
 FIELD_EQUALS
 AGGREGATION_EQUALS
+AGGREGATE_ASSERT
 DUPLICATE_CHECK
 ```
 
@@ -399,7 +401,8 @@ DUPLICATE_CHECK
 5. `RELATION_EXISTS`：`source`, `target`, `keys`, `expectExists`，可选 `sourceWhere`, `targetWhere`, `sourceExists`。
 6. `FIELD_EQUALS`：`source`, `target`, `key`, `sourceField`, `targetField`。
 7. `AGGREGATION_EQUALS`：`source`, `target`, `groupBy`, `sum`, `targetField`, 可选 `targetKey`。
-8. `DUPLICATE_CHECK`：`tableName`, `groupBy`。
+8. `AGGREGATE_ASSERT`：`source`, `target`, `groupBy`, `aggregate`, `assert`；`assert` 支持 `targetField` 或目标侧 `aggregate`。
+9. `DUPLICATE_CHECK`：`tableName`, `groupBy`。
 
 ### 4.2 AI 与本地映射优先级
 
@@ -456,6 +459,14 @@ DUPLICATE_CHECK
    - `groupBy` 至少包含一个字段。
    - `groupBy` 中所有字段都存在于目标表。
 
+6. `AGGREGATE_ASSERT`
+   - `source`、`target` 均存在。
+   - `groupBy` 支持单字段或 `{sourceField,targetField}` 数组，字段必须分别存在于 source 和 target。
+   - `aggregate.fn` 当前支持 `SUM`、`COUNT`；`SUM` 必须提供存在于 source 的 `field`。
+   - `assert.op` 支持 `==`、`!=`、`>`、`>=`、`<`、`<=`。
+   - `assert.targetField` 或 `assert.aggregate` 必须提供一个；目标字段或目标聚合字段必须存在于 target。
+   - 可选 `sourceWhere`、`targetWhere` 使用行表达式谓词校验字段合法性。
+
 6. `ROW_EXPRESSION`
    - `tableName` 存在。
    - `conditions` 至少包含一个条件。
@@ -473,6 +484,7 @@ DUPLICATE_CHECK
 | `FIELD_EXPRESSION` | `左侧字段=实际值；右侧表达式=计算值` | 失败条件文本 | `表达式条件不成立` |
 | `ROW_EXPRESSION` | `左侧表达式=计算值；右侧表达式=计算值` | 失败条件文本 | `行表达式条件不成立` |
 | `AGGREGATION_EQUALS` | `目标字段=实际值；来源汇总=计算值` | `目标字段 == 来源表.sumField 汇总值` | `聚合结果不一致` |
+| `AGGREGATE_ASSERT` | `目标字段或目标汇总=实际值；来源汇总=计算值` | `目标字段/目标汇总 op 来源汇总值` | `聚合结果不一致` |
 | `FIELD_EQUALS` | `source.sourceField=实际值；target.targetField=期望值` | `sourceField == target.targetField` | `关联字段值不一致` |
 | `EXISTS_IN_TABLE` | `source.key=实际值` | `target.key 中存在对应记录` | `关联记录不存在` |
 | `DUPLICATE_CHECK` | `字段组合=组合值` | `唯一组合` | `存在重复记录` |
@@ -550,7 +562,7 @@ DUPLICATE_CHECK
 4. 后续新增 30 条规则映射回归测试，确认每条规则都能落到 `FIELD_CHECK`、`ROW_ASSERT`、`RELATION_EXISTS`、`JOIN_ASSERT`、`AGGREGATE_ASSERT` 或 `DUPLICATE_ASSERT`。
 5. H2 seed 表能通过 `BusinessTableDataProvider` 读取为 `DataTable`，主键、表头、行数和字段值与业务表一致。
 6. Excel 缺少业务 sheet 时仍可导入规则资产，且新导入数据集不写业务行 JSON 快照。
-7. AI 返回合法 `ROW_EXPRESSION`、`EXISTS_IN_TABLE`、`FIELD_EQUALS`、`AGGREGATION_EQUALS`、`DUPLICATE_CHECK` 推荐时，返回 `generatedByAi=true`。
+7. AI 返回合法 `ROW_EXPRESSION`、`EXISTS_IN_TABLE`、`FIELD_EQUALS`、`AGGREGATION_EQUALS`、`AGGREGATE_ASSERT`、`DUPLICATE_CHECK` 推荐时，返回 `generatedByAi=true`。
 8. AI 返回不存在表名、字段名、key、非法 AST 或不可执行表达式时，降级本地推荐并带 warning。
 9. 绑定接口拒绝不可执行模板参数，并接受合法 `ROW_EXPRESSION`。
 10. 各模板异常详情展示符合新口径。

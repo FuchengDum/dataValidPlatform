@@ -37,7 +37,8 @@ public class AiAssistService {
     private static final String SOURCE_AI = "OPENAI_COMPATIBLE";
     private static final List<String> SUPPORTED_RECOMMENDATION_TEMPLATES = Arrays.asList(
             "NOT_NULL", "NON_NEGATIVE", "NUMERIC_TYPE", "FIELD_EXPRESSION", "ROW_EXPRESSION",
-            "EXISTS_IN_TABLE", "RELATION_EXISTS", "FIELD_EQUALS", "AGGREGATION_EQUALS", "DUPLICATE_CHECK");
+            "EXISTS_IN_TABLE", "RELATION_EXISTS", "FIELD_EQUALS", "AGGREGATION_EQUALS",
+            "AGGREGATE_ASSERT", "DUPLICATE_CHECK");
 
     private final AiChatClient aiChatClient;
     private final ObjectMapper objectMapper;
@@ -265,7 +266,7 @@ public class AiAssistService {
     private String recommendationSystemPrompt() {
         return "你是业务规则模板推荐助手。只允许输出 JSON，字段为 templateCode、templateParams、confidence、explanation。"
                 + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE、FIELD_EXPRESSION、"
-                + "ROW_EXPRESSION、EXISTS_IN_TABLE、RELATION_EXISTS、FIELD_EQUALS、AGGREGATION_EQUALS、DUPLICATE_CHECK。"
+                + "ROW_EXPRESSION、EXISTS_IN_TABLE、RELATION_EXISTS、FIELD_EQUALS、AGGREGATION_EQUALS、AGGREGATE_ASSERT、DUPLICATE_CHECK。"
                 + "字段级模板参数必须包含 tableName 和 fields；FIELD_EXPRESSION 参数必须包含 tableName 和 expression。"
                 + "ROW_EXPRESSION 参数必须包含 tableName 和 conditions；conditions 每项包含 left、operator、right，"
                 + "可选 when 表达仅在满足条件时执行；operator 支持 ==、!=、>、>=、<、<=、in、notIn、isNull、isNotNull。"
@@ -278,6 +279,9 @@ public class AiAssistService {
                 + "sourceExists 包含 target、keys、targetWhere，用于先按第三张表过滤源记录。"
                 + "FIELD_EQUALS 参数必须包含 source、target、key、sourceField、targetField；"
                 + "AGGREGATION_EQUALS 参数必须包含 source、target、groupBy、sum、targetField，可选 targetKey；"
+                + "AGGREGATE_ASSERT 参数必须包含 source、target、groupBy、aggregate、assert；"
+                + "groupBy 可为字段名或 {sourceField,targetField} 数组，aggregate 包含 fn 和 field；"
+                + "assert 包含 op、tolerance，且必须提供 targetField 或 aggregate；"
                 + "DUPLICATE_CHECK 参数必须包含 tableName 和 groupBy，可选 where 过滤条件。"
                 + "金额关系、状态条件、时间逻辑、库存连续性、汇总关系、跨表关系必须推荐能表达业务关系的模板，不能降级为单纯类型检查。"
                 + "所有参数只能使用用户提供的表名和字段名。";

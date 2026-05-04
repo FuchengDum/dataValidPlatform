@@ -6,6 +6,7 @@ import com.example.datavalidator.persistence.DataTableSnapshotEntity;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 class TemplateBindingValidator {
@@ -42,6 +43,9 @@ class TemplateBindingValidator {
                 break;
             case "AGGREGATION_EQUALS":
                 validateAggregationEquals(params, headersByTable);
+                break;
+            case "AGGREGATE_ASSERT":
+                validateAggregateAssert(params, headersByTable);
                 break;
             case "DUPLICATE_CHECK":
                 validateDuplicateCheck(params, headersByTable);
@@ -139,6 +143,43 @@ class TemplateBindingValidator {
         requireField(targetHeaders, requireParam(params, "targetField"));
     }
 
+    @SuppressWarnings("unchecked")
+    private static void validateAggregateAssert(Map<String, Object> params, Map<String, List<String>> headersByTable) {
+        List<String> sourceHeaders = requireTable(headersByTable, requireParam(params, "source"));
+        List<String> targetHeaders = requireTable(headersByTable, requireParam(params, "target"));
+        requireAggregateGroupBy(params, sourceHeaders, targetHeaders);
+        validateAggregateSpec(params.get("aggregate"), sourceHeaders, "aggregate");
+        if (!(params.get("assert") instanceof Map)) {
+            throw new BadRequestException("模板参数 assert 格式不支持");
+        }
+        Map<String, Object> assertion = (Map<String, Object>) params.get("assert");
+        String operator = asString(assertion.get("op"));
+        if (!isBlank(operator) && !isAggregateOperator(operator)) {
+            throw new BadRequestException("聚合断言操作符不支持: " + operator);
+        }
+        validateTolerance(assertion.get("tolerance"));
+        String targetField = asString(assertion.get("targetField"));
+        Object targetAggregate = assertion.get("aggregate");
+        if (targetAggregate == null) {
+            targetAggregate = params.get("targetAggregate");
+        }
+        if (isBlank(targetField) && targetAggregate == null) {
+            throw new BadRequestException("模板参数 assert.targetField 或 assert.aggregate 必须提供一个");
+        }
+        if (!isBlank(targetField)) {
+            requireField(targetHeaders, targetField);
+        }
+        if (targetAggregate != null) {
+            validateAggregateSpec(targetAggregate, targetHeaders, "assert.aggregate");
+        }
+        if (params.containsKey("sourceWhere")) {
+            RowExpressionEvaluator.validatePredicate(params.get("sourceWhere"), sourceHeaders);
+        }
+        if (params.containsKey("targetWhere")) {
+            RowExpressionEvaluator.validatePredicate(params.get("targetWhere"), targetHeaders);
+        }
+    }
+
     private static void validateDuplicateCheck(Map<String, Object> params, Map<String, List<String>> headersByTable) {
         List<String> headers = requireTable(headersByTable, requireParam(params, "tableName"));
         List<String> fields = fields(params.get("groupBy"));
@@ -151,6 +192,67 @@ class TemplateBindingValidator {
         if (params.containsKey("where")) {
             RowExpressionEvaluator.validatePredicate(params.get("where"), headers);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void requireAggregateGroupBy(Map<String, Object> params, List<String> sourceHeaders,
+                                                List<String> targetHeaders) {
+        int matchedKeys = 0;
+        Object rawGroupBy = params.get("groupBy");
+        if (rawGroupBy instanceof List) {
+            for (Object rawKey : (List<?>) rawGroupBy) {
+                if (rawKey instanceof Map) {
+                    Map<String, Object> key = (Map<String, Object>) rawKey;
+                    requireField(sourceHeaders, requireParam(key, "sourceField"));
+                    requireField(targetHeaders, requireParam(key, "targetField"));
+                    matchedKeys++;
+                } else if (!isBlank(asString(rawKey))) {
+                    requireField(sourceHeaders, asString(rawKey));
+                    requireField(targetHeaders, asString(rawKey));
+                    matchedKeys++;
+                }
+            }
+        }
+        if (matchedKeys == 0) {
+            String groupBy = requireParam(params, "groupBy");
+            String targetKey = asString(params.get("targetKey"));
+            if (isBlank(targetKey)) {
+                targetKey = groupBy;
+            }
+            requireField(sourceHeaders, groupBy);
+            requireField(targetHeaders, targetKey);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void validateAggregateSpec(Object rawAggregate, List<String> headers, String paramName) {
+        if (!(rawAggregate instanceof Map)) {
+            throw new BadRequestException("模板参数 " + paramName + " 格式不支持");
+        }
+        Map<String, Object> aggregate = (Map<String, Object>) rawAggregate;
+        String fn = asString(aggregate.get("fn"));
+        if (isBlank(fn)) {
+            fn = "SUM";
+        }
+        String normalized = fn.toUpperCase(Locale.ROOT);
+        if (!"SUM".equals(normalized) && !"COUNT".equals(normalized)) {
+            throw new BadRequestException("聚合函数不支持: " + fn);
+        }
+        if (!"COUNT".equals(normalized)) {
+            requireField(headers, requireParam(aggregate, "field"));
+        }
+    }
+
+    private static void validateTolerance(Object value) {
+        if (value != null && !ValueParsers.decimal(asString(value)).isPresent()) {
+            throw new BadRequestException("模板参数 tolerance 必须是数值");
+        }
+    }
+
+    private static boolean isAggregateOperator(String operator) {
+        return "==".equals(operator) || "=".equals(operator) || "!=".equals(operator)
+                || ">".equals(operator) || ">=".equals(operator)
+                || "<".equals(operator) || "<=".equals(operator);
     }
 
     @SuppressWarnings("unchecked")
@@ -178,7 +280,14 @@ class TemplateBindingValidator {
         if (rawKeys instanceof List) {
             for (Object rawKey : (List<?>) rawKeys) {
                 if (!(rawKey instanceof Map)) {
-                    throw new BadRequestException("模板参数 keys 格式不支持");
+                    String field = asString(rawKey);
+                    if (isBlank(field)) {
+                        throw new BadRequestException("模板参数 keys 格式不支持");
+                    }
+                    requireField(sourceHeaders, field);
+                    requireField(targetHeaders, field);
+                    matchedKeys++;
+                    continue;
                 }
                 Map<String, Object> key = (Map<String, Object>) rawKey;
                 String sourceField = requireParam(key, "sourceField");

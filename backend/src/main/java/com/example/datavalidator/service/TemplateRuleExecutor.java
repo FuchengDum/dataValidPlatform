@@ -11,7 +11,9 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -44,6 +46,8 @@ public class TemplateRuleExecutor {
                 return fieldEquals(rule, tables, params);
             case "AGGREGATION_EQUALS":
                 return aggregationEquals(rule, tables, params);
+            case "AGGREGATE_ASSERT":
+                return aggregateAssert(rule, tables, params);
             case "DUPLICATE_CHECK":
                 return duplicateCheck(rule, table(tables, params), fields(params.get("groupBy")), params.get("where"));
             default:
@@ -319,6 +323,223 @@ public class TemplateRuleExecutor {
         return findings;
     }
 
+    private List<ValidationFinding> aggregateAssert(RuleDefinition rule, Map<String, DataTable> tables,
+                                                    Map<String, Object> params) {
+        DataTable source = tables.get(asString(params.get("source")));
+        DataTable target = tables.get(asString(params.get("target")));
+        List<RelationKey> keys = aggregateGroupKeys(params);
+        AggregateSpec sourceAggregate = aggregateSpec(params.get("aggregate"), asString(params.get("sum")));
+        AggregateAssertion assertion = aggregateAssertion(params.get("assert"), params);
+        if (source == null || target == null || keys.isEmpty()
+                || sourceAggregate == null || assertion == null) {
+            return Collections.emptyList();
+        }
+        if (!ValueParsers.isBlank(assertion.targetField)) {
+            return aggregateAssertTargetField(rule, source, target, keys, sourceAggregate, assertion, params);
+        }
+        return aggregateAssertTargetAggregate(rule, source, target, keys, sourceAggregate, assertion, params);
+    }
+
+    private List<ValidationFinding> aggregateAssertTargetField(RuleDefinition rule, DataTable source,
+                                                               DataTable target, List<RelationKey> keys,
+                                                               AggregateSpec sourceAggregate,
+                                                               AggregateAssertion assertion,
+                                                               Map<String, Object> params) {
+        Map<String, AggregateBucket> sourceBuckets =
+                aggregateBuckets(source, keys, true, sourceAggregate, params.get("sourceWhere"));
+        List<ValidationFinding> findings = new ArrayList<>();
+        List<String> matchedGroups = new ArrayList<>();
+        for (DataRow row : target.getRows()) {
+            if (!matchesWhere(params.get("targetWhere"), row)) {
+                continue;
+            }
+            String key = groupKey(row, targetFields(keys));
+            AggregateBucket expected = sourceBuckets.get(key);
+            Optional<BigDecimal> actual = ValueParsers.decimal(row.value(assertion.targetField));
+            if (expected != null && (!actual.isPresent()
+                    || !compare(actual.get(), expected.value, assertion))) {
+                findings.add(targetFieldAggregateFinding(rule, source, target, row, sourceAggregate, assertion,
+                        expected.value));
+            }
+            if (expected != null) {
+                matchedGroups.add(key);
+            }
+        }
+        addMissingAggregateTargets(rule, source, target, keys, sourceAggregate, sourceBuckets, matchedGroups, findings);
+        return findings;
+    }
+
+    private List<ValidationFinding> aggregateAssertTargetAggregate(RuleDefinition rule, DataTable source,
+                                                                   DataTable target, List<RelationKey> keys,
+                                                                   AggregateSpec sourceAggregate,
+                                                                   AggregateAssertion assertion,
+                                                                   Map<String, Object> params) {
+        Map<String, AggregateBucket> sourceBuckets =
+                aggregateBuckets(source, keys, true, sourceAggregate, params.get("sourceWhere"));
+        Map<String, AggregateBucket> targetBuckets =
+                aggregateBuckets(target, keys, false, assertion.targetAggregate, params.get("targetWhere"));
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (Map.Entry<String, AggregateBucket> entry : sourceBuckets.entrySet()) {
+            AggregateBucket targetBucket = targetBuckets.get(entry.getKey());
+            if (targetBucket == null) {
+                findings.add(missingTargetAggregateFinding(rule, source, target, keys, sourceAggregate, entry.getValue()));
+            } else if (!compare(targetBucket.value, entry.getValue().value, assertion)) {
+                findings.add(targetAggregateFinding(rule, source, target, targetBucket, sourceAggregate, assertion,
+                        entry.getValue().value));
+            }
+        }
+        for (Map.Entry<String, AggregateBucket> entry : targetBuckets.entrySet()) {
+            if (!sourceBuckets.containsKey(entry.getKey())) {
+                findings.add(missingSourceAggregateFinding(rule, source, target, keys, assertion, entry.getValue()));
+            }
+        }
+        return findings;
+    }
+
+    private Map<String, AggregateBucket> aggregateBuckets(DataTable table, List<RelationKey> keys, boolean sourceSide,
+                                                          AggregateSpec aggregate, Object where) {
+        Map<String, AggregateBucket> result = new LinkedHashMap<>();
+        List<String> groupFields = sourceSide ? sourceFields(keys) : targetFields(keys);
+        for (DataRow row : table.getRows()) {
+            if (!matchesWhere(where, row)) {
+                continue;
+            }
+            Optional<BigDecimal> value = aggregateValue(row, aggregate);
+            if (!value.isPresent()) {
+                continue;
+            }
+            String key = groupKey(row, groupFields);
+            result.computeIfAbsent(key, ignored -> new AggregateBucket(row)).add(value.get());
+        }
+        return result;
+    }
+
+    private Optional<BigDecimal> aggregateValue(DataRow row, AggregateSpec aggregate) {
+        if ("COUNT".equals(aggregate.fn)) {
+            return Optional.of(BigDecimal.ONE);
+        }
+        return ValueParsers.decimal(row.value(aggregate.field));
+    }
+
+    private List<RelationKey> aggregateGroupKeys(Map<String, Object> params) {
+        return relationKeys(params.get("groupBy"), asString(params.get("groupBy")), asString(params.get("targetKey")));
+    }
+
+    @SuppressWarnings("unchecked")
+    private AggregateSpec aggregateSpec(Object rawAggregate, String fallbackSumField) {
+        if (rawAggregate instanceof Map) {
+            Map<String, Object> aggregate = (Map<String, Object>) rawAggregate;
+            String fn = aggregateFn(asString(aggregate.get("fn")));
+            String field = asString(aggregate.get("field"));
+            if (("COUNT".equals(fn) || !ValueParsers.isBlank(field)) && isSupportedAggregateFn(fn)) {
+                return new AggregateSpec(fn, field);
+            }
+        }
+        if (!ValueParsers.isBlank(fallbackSumField)) {
+            return new AggregateSpec("SUM", fallbackSumField);
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private AggregateAssertion aggregateAssertion(Object rawAssert, Map<String, Object> params) {
+        Map<String, Object> assertion = rawAssert instanceof Map
+                ? (Map<String, Object>) rawAssert : Collections.emptyMap();
+        String operator = asString(assertion.get("op"));
+        if (ValueParsers.isBlank(operator)) {
+            operator = "==";
+        }
+        if (!isSupportedAggregateOperator(operator)) {
+            return null;
+        }
+        String targetField = asString(assertion.get("targetField"));
+        if (ValueParsers.isBlank(targetField)) {
+            targetField = asString(params.get("targetField"));
+        }
+        AggregateSpec targetAggregate = aggregateSpec(assertion.get("aggregate"), "");
+        if (targetAggregate == null) {
+            targetAggregate = aggregateSpec(params.get("targetAggregate"), "");
+        }
+        if (ValueParsers.isBlank(targetField) && targetAggregate == null) {
+            return null;
+        }
+        return new AggregateAssertion(operator, targetField, targetAggregate, decimal(assertion.get("tolerance")));
+    }
+
+    private ValidationFinding targetFieldAggregateFinding(RuleDefinition rule, DataTable source, DataTable target,
+                                                          DataRow row, AggregateSpec sourceAggregate,
+                                                          AggregateAssertion assertion, BigDecimal expected) {
+        return finding(rule, target, row, assertion.targetField,
+                assertion.targetField + "=" + row.value(assertion.targetField) + "；"
+                        + aggregateLabel(source, sourceAggregate) + "=" + formatDecimal(expected),
+                assertion.targetField + " " + assertion.operator + " "
+                        + aggregateLabel(source, sourceAggregate) + "值",
+                "聚合结果不一致", "CALCULATION");
+    }
+
+    private ValidationFinding targetAggregateFinding(RuleDefinition rule, DataTable source, DataTable target,
+                                                     AggregateBucket targetBucket, AggregateSpec sourceAggregate,
+                                                     AggregateAssertion assertion, BigDecimal expected) {
+        return finding(rule, target, targetBucket.firstRow, assertion.targetAggregate.field,
+                aggregateLabel(target, assertion.targetAggregate) + "=" + formatDecimal(targetBucket.value)
+                        + "；" + aggregateLabel(source, sourceAggregate) + "=" + formatDecimal(expected),
+                aggregateLabel(target, assertion.targetAggregate) + " " + assertion.operator + " "
+                        + aggregateLabel(source, sourceAggregate) + "值",
+                "聚合结果不一致", "CALCULATION");
+    }
+
+    private void addMissingAggregateTargets(RuleDefinition rule, DataTable source, DataTable target,
+                                            List<RelationKey> keys, AggregateSpec sourceAggregate,
+                                            Map<String, AggregateBucket> sourceBuckets, List<String> matchedGroups,
+                                            List<ValidationFinding> findings) {
+        for (Map.Entry<String, AggregateBucket> entry : sourceBuckets.entrySet()) {
+            if (!matchedGroups.contains(entry.getKey())) {
+                findings.add(missingTargetAggregateFinding(rule, source, target, keys, sourceAggregate, entry.getValue()));
+            }
+        }
+    }
+
+    private ValidationFinding missingTargetAggregateFinding(RuleDefinition rule, DataTable source, DataTable target,
+                                                            List<RelationKey> keys, AggregateSpec sourceAggregate,
+                                                            AggregateBucket sourceBucket) {
+        return finding(rule, source, sourceBucket.firstRow, keys.get(0).sourceField,
+                source.getLogicalName() + "." + keySummary(sourceBucket.firstRow, keys, true)
+                        + "；" + sourceAggregate.field + " 汇总=" + formatDecimal(sourceBucket.value),
+                target.getLogicalName() + "." + keys.get(0).targetField + " 中存在聚合目标记录",
+                "聚合目标记录不存在", "RELATION");
+    }
+
+    private ValidationFinding missingSourceAggregateFinding(RuleDefinition rule, DataTable source, DataTable target,
+                                                            List<RelationKey> keys, AggregateAssertion assertion,
+                                                            AggregateBucket targetBucket) {
+        return finding(rule, target, targetBucket.firstRow, keys.get(0).targetField,
+                target.getLogicalName() + "." + keySummary(targetBucket.firstRow, keys, false)
+                        + "；" + assertion.targetAggregate.field + " 汇总=" + formatDecimal(targetBucket.value),
+                source.getLogicalName() + "." + keys.get(0).sourceField + " 中存在聚合来源记录",
+                "聚合来源记录不存在", "RELATION");
+    }
+
+    private boolean compare(BigDecimal actual, BigDecimal expected, AggregateAssertion assertion) {
+        BigDecimal diff = actual.subtract(expected).abs();
+        switch (assertion.operator) {
+            case "==":
+            case "=":
+                return diff.compareTo(assertion.tolerance) <= 0;
+            case "!=":
+                return diff.compareTo(assertion.tolerance) > 0;
+            case ">":
+                return actual.compareTo(expected) > 0;
+            case ">=":
+                return actual.compareTo(expected) >= 0;
+            case "<":
+                return actual.compareTo(expected) < 0;
+            case "<=":
+                return actual.compareTo(expected) <= 0;
+            default:
+                return false;
+        }
+    }
+
     private List<ValidationFinding> duplicateCheck(RuleDefinition rule, DataTable table, List<String> groupBy,
                                                    Object where) {
         if (table == null || groupBy.isEmpty()) {
@@ -361,6 +582,14 @@ public class TemplateRuleExecutor {
         return fields.stream().map(row::value).collect(Collectors.joining("\u001F"));
     }
 
+    private List<String> sourceFields(List<RelationKey> keys) {
+        return keys.stream().map(key -> key.sourceField).collect(Collectors.toList());
+    }
+
+    private List<String> targetFields(List<RelationKey> keys) {
+        return keys.stream().map(key -> key.targetField).collect(Collectors.toList());
+    }
+
     private String keySummary(DataRow row, List<RelationKey> keys, boolean sourceSide) {
         return keys.stream()
                 .map(key -> {
@@ -370,8 +599,36 @@ public class TemplateRuleExecutor {
                 .collect(Collectors.joining("；"));
     }
 
+    private String aggregateLabel(DataTable table, AggregateSpec aggregate) {
+        if ("COUNT".equals(aggregate.fn)) {
+            return table.getLogicalName() + ".记录数 汇总";
+        }
+        return table.getLogicalName() + "." + aggregate.field + " 汇总";
+    }
+
     private String formatDecimal(BigDecimal value) {
         return value.stripTrailingZeros().toPlainString();
+    }
+
+    private BigDecimal decimal(Object value) {
+        return ValueParsers.decimal(asString(value)).orElse(BigDecimal.ZERO);
+    }
+
+    private String aggregateFn(String fn) {
+        if (ValueParsers.isBlank(fn)) {
+            return "SUM";
+        }
+        return fn.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private boolean isSupportedAggregateFn(String fn) {
+        return "SUM".equals(fn) || "COUNT".equals(fn);
+    }
+
+    private boolean isSupportedAggregateOperator(String operator) {
+        return "==".equals(operator) || "=".equals(operator) || "!=".equals(operator)
+                || ">".equals(operator) || ">=".equals(operator)
+                || "<".equals(operator) || "<=".equals(operator);
     }
 
     private String asString(Object value) {
@@ -406,6 +663,9 @@ public class TemplateRuleExecutor {
                     if (!ValueParsers.isBlank(sourceField) && !ValueParsers.isBlank(targetField)) {
                         result.add(new RelationKey(sourceField, targetField));
                     }
+                } else if (!ValueParsers.isBlank(asString(rawKey))) {
+                    String field = asString(rawKey);
+                    result.add(new RelationKey(field, field));
                 }
             }
         }
@@ -423,6 +683,44 @@ public class TemplateRuleExecutor {
         RelationKey(String sourceField, String targetField) {
             this.sourceField = sourceField;
             this.targetField = targetField;
+        }
+    }
+
+    private static class AggregateSpec {
+        private final String fn;
+        private final String field;
+
+        AggregateSpec(String fn, String field) {
+            this.fn = fn;
+            this.field = field;
+        }
+    }
+
+    private static class AggregateAssertion {
+        private final String operator;
+        private final String targetField;
+        private final AggregateSpec targetAggregate;
+        private final BigDecimal tolerance;
+
+        AggregateAssertion(String operator, String targetField, AggregateSpec targetAggregate,
+                           BigDecimal tolerance) {
+            this.operator = operator;
+            this.targetField = targetField;
+            this.targetAggregate = targetAggregate;
+            this.tolerance = tolerance;
+        }
+    }
+
+    private static class AggregateBucket {
+        private final DataRow firstRow;
+        private BigDecimal value = BigDecimal.ZERO;
+
+        AggregateBucket(DataRow firstRow) {
+            this.firstRow = firstRow;
+        }
+
+        void add(BigDecimal amount) {
+            value = value.add(amount);
         }
     }
 

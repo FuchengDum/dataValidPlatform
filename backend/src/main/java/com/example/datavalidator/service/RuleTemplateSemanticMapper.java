@@ -464,10 +464,10 @@ class RuleTemplateSemanticMapper {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("source", source);
         params.put("target", target);
-        params.put("groupBy", groupBy);
-        params.put("sum", sumField);
-        params.put("targetField", targetField);
-        return applicable("AGGREGATION_EQUALS", params, "基于明细汇总到主表语义推荐模板。", "HIGH");
+        params.put("groupBy", Collections.singletonList(relationKey(groupBy, groupBy)));
+        params.put("aggregate", aggregate("SUM", sumField));
+        params.put("assert", aggregateAssertion(targetField, text));
+        return applicable("AGGREGATE_ASSERT", params, "基于分组聚合断言语义推荐模板。", "HIGH");
     }
 
     private RuleTemplateSemanticMatch duplicateCheck(RuleDefinitionEntity rule,
@@ -533,6 +533,25 @@ class RuleTemplateSemanticMapper {
         params.put("keys", keys);
         params.put("expectExists", expectExists);
         return params;
+    }
+
+    private Map<String, Object> aggregate(String fn, String field) {
+        Map<String, Object> aggregate = new LinkedHashMap<>();
+        aggregate.put("fn", fn);
+        aggregate.put("field", field);
+        return aggregate;
+    }
+
+    private Map<String, Object> aggregateAssertion(String targetField, String text) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", "==");
+        assertion.put("tolerance", 0.01);
+        if (containsAny(text, "分别汇总", "按日期", "按日", "指标")) {
+            assertion.put("aggregate", aggregate("SUM", targetField));
+        } else {
+            assertion.put("targetField", targetField);
+        }
+        return assertion;
     }
 
     private Map<String, Object> sourceExists(String target, List<Map<String, Object>> keys, Object targetWhere) {

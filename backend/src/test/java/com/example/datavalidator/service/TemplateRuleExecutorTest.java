@@ -397,6 +397,35 @@ class TemplateRuleExecutorTest {
     }
 
     @Test
+    void aggregateAssertTemplateComparesGroupedSumsAcrossTables() {
+        DataTable items = table("t_order_item", "明细ID",
+                row("I001", "明细ID", "I001", "统计日期", "2026-04-01", "小计金额", "10"),
+                row("I002", "明细ID", "I002", "统计日期", "2026-04-01", "小计金额", "20"),
+                row("I003", "明细ID", "I003", "统计日期", "2026-04-02", "小计金额", "8"));
+        DataTable orders = table("t_order", "订单ID",
+                row("O001", "订单ID", "O001", "统计日期", "2026-04-01", "订单金额", "30"),
+                row("O002", "订单ID", "O002", "统计日期", "2026-04-02", "订单金额", "10"));
+        RuleBinding binding = template("R030", "AGGREGATE_ASSERT")
+                .param("source", "t_order_item")
+                .param("target", "t_order")
+                .param("groupBy", Arrays.asList(relationKey("统计日期", "统计日期")))
+                .param("aggregate", aggregate("SUM", "小计金额"))
+                .param("assert", aggregateAssert("==", aggregate("SUM", "订单金额"), "0.01"))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R030", "按日期指标汇总一致"),
+                tables(items, orders), binding);
+
+        assertThat(findings).hasSize(1);
+        ValidationFinding finding = findings.get(0);
+        assertThat(finding.getRecordKey()).isEqualTo("O002");
+        assertThat(finding.getFieldName()).isEqualTo("订单金额");
+        assertThat(finding.getActualValue()).isEqualTo("t_order.订单金额 汇总=10；t_order_item.小计金额 汇总=8");
+        assertThat(finding.getExpectedValue()).isEqualTo("t_order.订单金额 汇总 == t_order_item.小计金额 汇总值");
+        assertThat(finding.getDescription()).isEqualTo("聚合结果不一致");
+    }
+
+    @Test
     void duplicateCheckTemplateReportsRepeatedGroups() {
         DataTable payments = table("payment", "支付ID",
                 row("P001", "支付ID", "P001", "订单ID", "O001", "支付状态", "支付成功"),
@@ -527,6 +556,21 @@ class TemplateRuleExecutorTest {
         key.put("sourceField", sourceField);
         key.put("targetField", targetField);
         return key;
+    }
+
+    private Map<String, Object> aggregate(String fn, String field) {
+        Map<String, Object> aggregate = new LinkedHashMap<>();
+        aggregate.put("fn", fn);
+        aggregate.put("field", field);
+        return aggregate;
+    }
+
+    private Map<String, Object> aggregateAssert(String operator, Object targetAggregate, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("aggregate", targetAggregate);
+        assertion.put("tolerance", tolerance);
+        return assertion;
     }
 
     private Map<String, Object> field(String fieldName) {

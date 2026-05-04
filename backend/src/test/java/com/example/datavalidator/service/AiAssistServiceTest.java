@@ -218,18 +218,20 @@ class AiAssistServiceTest {
         AiAssistService service = multiTableRecommendationService("R012", "订单金额汇总一致",
                 "订单金额应等于订单明细小计金额之和",
                 "sum(t_order_item.小计金额) by 订单ID = t_order.订单金额",
-                Optional.of("{\"templateCode\":\"AGGREGATION_EQUALS\","
+                Optional.of("{\"templateCode\":\"AGGREGATE_ASSERT\","
                         + "\"templateParams\":{\"source\":\"t_order_item\",\"target\":\"t_order\","
-                        + "\"groupBy\":\"订单ID\",\"sum\":\"小计金额\",\"targetField\":\"订单金额\"},"
+                        + "\"groupBy\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
+                        + "\"aggregate\":{\"fn\":\"SUM\",\"field\":\"小计金额\"},"
+                        + "\"assert\":{\"op\":\"==\",\"targetField\":\"订单金额\",\"tolerance\":0.01}},"
                         + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐聚合一致\"}"));
 
         AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
                 recommendationRequest("ds-1", "R012"));
 
         assertThat(result.isGeneratedByAi()).isTrue();
-        assertThat(result.getTemplateCode()).isEqualTo("AGGREGATION_EQUALS");
-        assertThat(result.getTemplateParams()).containsEntry("sum", "小计金额");
-        assertThat(result.getTemplateParams()).containsEntry("targetField", "订单金额");
+        assertThat(result.getTemplateCode()).isEqualTo("AGGREGATE_ASSERT");
+        assertThat(result.getTemplateParams().get("aggregate")).asString().contains("小计金额");
+        assertThat(result.getTemplateParams().get("assert")).asString().contains("订单金额");
     }
 
     @Test
@@ -484,7 +486,7 @@ class AiAssistServiceTest {
         when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
                 table("ds-1", "t_order_item", "明细ID", "订单ID", "商品ID", "小计金额"),
                 table("ds-1", "t_product", "商品ID", "商品名称"),
-                table("ds-1", "t_payment", "支付ID", "订单ID", "用户ID", "支付状态"),
+                table("ds-1", "t_payment", "支付ID", "订单ID", "用户ID", "支付状态", "支付金额"),
                 table("ds-1", "t_order", "订单ID", "用户ID", "订单金额")));
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
                 new ObjectMapper(), ruleRepository, tableRepository);

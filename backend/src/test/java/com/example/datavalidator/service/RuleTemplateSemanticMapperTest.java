@@ -103,7 +103,7 @@ class RuleTemplateSemanticMapperTest {
     }
 
     @Test
-    void mapsGroupedSumToAggregationEqualsTemplate() {
+    void mapsGroupedSumToAggregateAssertTemplate() {
         RuleTemplateSemanticMatch match = mapper.recommend(rule("R012", "订单金额汇总一致",
                 "订单金额应等于订单明细小计金额之和", "sum(t_order_item.小计金额) by 订单ID = t_order.订单金额",
                 "t_order_item,t_order"),
@@ -112,12 +112,12 @@ class RuleTemplateSemanticMapperTest {
                         table("t_order", "订单ID", "订单金额")));
 
         assertThat(match.isApplicable()).isTrue();
-        assertThat(match.getTemplateCode()).isEqualTo("AGGREGATION_EQUALS");
+        assertThat(match.getTemplateCode()).isEqualTo("AGGREGATE_ASSERT");
         assertThat(match.getTemplateParams()).containsEntry("source", "t_order_item");
         assertThat(match.getTemplateParams()).containsEntry("target", "t_order");
-        assertThat(match.getTemplateParams()).containsEntry("groupBy", "订单ID");
-        assertThat(match.getTemplateParams()).containsEntry("sum", "小计金额");
-        assertThat(match.getTemplateParams()).containsEntry("targetField", "订单金额");
+        assertThat(match.getTemplateParams().get("groupBy")).asList().hasSize(1);
+        assertThat(match.getTemplateParams().get("aggregate")).asString().contains("小计金额");
+        assertThat(match.getTemplateParams().get("assert")).asString().contains("订单金额");
     }
 
     @Test
@@ -233,7 +233,7 @@ class RuleTemplateSemanticMapperTest {
                         "t_inventory_log", "ROW_EXPRESSION"),
                 expected("R017", "订单-明细金额一致性", "订单金额应等于其所有明细小计金额之和",
                         "SELECT o.订单ID FROM t_order o LEFT JOIN t_order_item i ON o.订单ID=i.订单ID GROUP BY o.订单ID, o.订单金额 HAVING ABS(o.订单金额 - SUM(i.小计金额)) > 0.01",
-                        "t_order,t_order_item", "AGGREGATION_EQUALS"),
+                        "t_order,t_order_item", "AGGREGATE_ASSERT"),
                 expected("R018", "明细-商品关联校验", "明细中的商品ID必须在商品表中存在",
                         "SELECT i.* FROM t_order_item i LEFT JOIN t_product p ON i.商品ID=p.商品ID WHERE p.商品ID IS NULL",
                         "t_order_item,t_product", "EXISTS_IN_TABLE"),
@@ -242,7 +242,7 @@ class RuleTemplateSemanticMapperTest {
                         "t_order_item,t_product", "FIELD_EQUALS"),
                 expected("R020", "订单-支付金额一致性", "订单实付金额应等于支付表中对应支付金额之和",
                         "SELECT o.订单ID, o.实付金额, SUM(p.支付金额) AS 已支付 FROM t_order o LEFT JOIN t_payment p ON o.订单ID=p.订单ID GROUP BY o.订单ID, o.实付金额 HAVING ABS(o.实付金额 - SUM(p.支付金额)) > 0.01",
-                        "t_order,t_payment", "AGGREGATION_EQUALS"),
+                        "t_order,t_payment", "AGGREGATE_ASSERT"),
                 expected("R023", "支付-订单关联存在性", "支付记录中的订单ID必须在订单表中存在",
                         "SELECT p.* FROM t_payment p LEFT JOIN t_order o ON p.订单ID=o.订单ID WHERE o.订单ID IS NULL",
                         "t_payment,t_order", "EXISTS_IN_TABLE"),
