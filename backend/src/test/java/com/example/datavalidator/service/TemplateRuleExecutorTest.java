@@ -347,6 +347,33 @@ class TemplateRuleExecutorTest {
     }
 
     @Test
+    void joinAssertTemplateComparesJoinedFieldsWithTolerance() {
+        DataTable items = table("t_order_item", "明细ID",
+                row("I001", "明细ID", "I001", "商品ID", "P001", "单价", "199.00"),
+                row("I002", "明细ID", "I002", "商品ID", "P002", "单价", "49.98"),
+                row("I003", "明细ID", "I003", "商品ID", "P003", "单价", "88.00"));
+        DataTable products = table("t_product", "商品ID",
+                row("P001", "商品ID", "P001", "售价", "199.00"),
+                row("P002", "商品ID", "P002", "售价", "50.00"));
+        RuleBinding binding = template("R019", "JOIN_ASSERT")
+                .param("source", "t_order_item")
+                .param("target", "t_product")
+                .param("keys", Arrays.asList(relationKey("商品ID", "商品ID")))
+                .param("assert", joinAssert(sourceField("单价"), "==", targetField("售价"), "0.01"))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R019", "明细商品价格一致"),
+                tables(items, products), binding);
+
+        assertThat(findings).hasSize(2);
+        assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("I002", "I003");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("t_order_item.单价=49.98；t_product.售价=50.00");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("t_order_item.单价 == t_product.售价");
+        assertThat(findings.get(0).getDescription()).isEqualTo("关联断言不成立");
+        assertThat(findings.get(1).getDescription()).isEqualTo("关联记录不存在");
+    }
+
+    @Test
     void aggregationEqualsTemplateComparesGroupedSumToTargetField() {
         DataTable items = table("order_item", "明细ID",
                 row("I001", "明细ID", "I001", "订单ID", "O001", "小计金额", "10"),
@@ -465,6 +492,29 @@ class TemplateRuleExecutorTest {
                 .allSatisfy(value -> assertThat(value).isEqualTo("订单ID=O001"));
     }
 
+    @Test
+    void duplicateAssertTemplateComparesFilteredGroupCount() {
+        DataTable payments = table("t_payment", "支付ID",
+                row("P001", "支付ID", "P001", "订单ID", "O001", "支付状态", "支付成功"),
+                row("P002", "支付ID", "P002", "订单ID", "O001", "支付状态", "支付成功"),
+                row("P003", "支付ID", "P003", "订单ID", "O001", "支付状态", "支付失败"),
+                row("P004", "支付ID", "P004", "订单ID", "O002", "支付状态", "支付成功"));
+        RuleBinding binding = template("R029", "DUPLICATE_ASSERT")
+                .param("table", "t_payment")
+                .param("groupBy", Arrays.asList("订单ID"))
+                .param("where", condition(field("支付状态"), "==", literal("支付成功")))
+                .param("assert", duplicateAssert("<=", 1))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R029", "重复支付检查"), tables(payments), binding);
+
+        assertThat(findings).hasSize(2);
+        assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("P001", "P002");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("订单ID=O001；count=2");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("count <= 1");
+        assertThat(findings.get(0).getDescription()).isEqualTo("分组次数断言不成立");
+    }
+
     private RuleDefinition rule(String ruleId, String ruleName) {
         RuleDefinition rule = new RuleDefinition();
         rule.setRuleId(ruleId);
@@ -558,6 +608,27 @@ class TemplateRuleExecutorTest {
         return key;
     }
 
+    private Map<String, Object> joinAssert(Object left, String operator, Object right, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("left", left);
+        assertion.put("op", operator);
+        assertion.put("right", right);
+        assertion.put("tolerance", tolerance);
+        return assertion;
+    }
+
+    private Map<String, Object> sourceField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("sourceField", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> targetField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("targetField", fieldName);
+        return expression;
+    }
+
     private Map<String, Object> aggregate(String fn, String field) {
         Map<String, Object> aggregate = new LinkedHashMap<>();
         aggregate.put("fn", fn);
@@ -570,6 +641,13 @@ class TemplateRuleExecutorTest {
         assertion.put("op", operator);
         assertion.put("aggregate", targetAggregate);
         assertion.put("tolerance", tolerance);
+        return assertion;
+    }
+
+    private Map<String, Object> duplicateAssert(String operator, int count) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("count", count);
         return assertion;
     }
 

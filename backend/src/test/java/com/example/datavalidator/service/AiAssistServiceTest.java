@@ -198,19 +198,20 @@ class AiAssistServiceTest {
         AiAssistService service = multiTableRecommendationService("R011", "支付用户与订单用户一致",
                 "支付表用户ID应与订单表用户ID一致",
                 "t_payment.用户ID = t_order.用户ID by 订单ID",
-                Optional.of("{\"templateCode\":\"FIELD_EQUALS\","
+                Optional.of("{\"templateCode\":\"JOIN_ASSERT\","
                         + "\"templateParams\":{\"source\":\"t_payment\",\"target\":\"t_order\","
-                        + "\"key\":\"订单ID\",\"sourceField\":\"用户ID\",\"targetField\":\"用户ID\"},"
+                        + "\"keys\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
+                        + "\"assert\":{\"left\":{\"sourceField\":\"用户ID\"},\"op\":\"==\","
+                        + "\"right\":{\"targetField\":\"用户ID\"}}},"
                         + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐跨表字段一致\"}"));
 
         AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
                 recommendationRequest("ds-1", "R011"));
 
         assertThat(result.isGeneratedByAi()).isTrue();
-        assertThat(result.getTemplateCode()).isEqualTo("FIELD_EQUALS");
-        assertThat(result.getTemplateParams()).containsEntry("key", "订单ID");
-        assertThat(result.getTemplateParams()).containsEntry("sourceField", "用户ID");
-        assertThat(result.getTemplateParams()).containsEntry("targetField", "用户ID");
+        assertThat(result.getTemplateCode()).isEqualTo("JOIN_ASSERT");
+        assertThat(result.getTemplateParams().get("keys")).asList().hasSize(1);
+        assertThat(result.getTemplateParams().get("assert")).asString().contains("用户ID");
     }
 
     @Test
@@ -235,21 +236,23 @@ class AiAssistServiceTest {
     }
 
     @Test
-    void recommendRuleBindingAcceptsValidDuplicateCheckModelRecommendation() {
+    void recommendRuleBindingAcceptsValidDuplicateAssertModelRecommendation() {
         AiAssistService service = multiTableRecommendationService("R013", "重复支付检查",
                 "同一订单ID和支付状态不得重复",
                 "unique(订单ID, 支付状态)",
-                Optional.of("{\"templateCode\":\"DUPLICATE_CHECK\","
-                        + "\"templateParams\":{\"tableName\":\"t_payment\","
-                        + "\"groupBy\":[\"订单ID\",\"支付状态\"]},"
+                Optional.of("{\"templateCode\":\"DUPLICATE_ASSERT\","
+                        + "\"templateParams\":{\"table\":\"t_payment\","
+                        + "\"groupBy\":[\"订单ID\",\"支付状态\"],"
+                        + "\"assert\":{\"op\":\"<=\",\"count\":1}},"
                         + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐重复检查\"}"));
 
         AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
                 recommendationRequest("ds-1", "R013"));
 
         assertThat(result.isGeneratedByAi()).isTrue();
-        assertThat(result.getTemplateCode()).isEqualTo("DUPLICATE_CHECK");
+        assertThat(result.getTemplateCode()).isEqualTo("DUPLICATE_ASSERT");
         assertThat(result.getTemplateParams().get("groupBy")).asList().containsExactly("订单ID", "支付状态");
+        assertThat(result.getTemplateParams().get("assert")).asString().contains("<=", "1");
     }
 
     @Test

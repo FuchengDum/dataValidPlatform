@@ -25,8 +25,10 @@ public class RuleTemplateController {
                 template("EXISTS_IN_TABLE", "跨表存在性校验", "source", "target", "key"),
                 template("RELATION_EXISTS", "关系存在性校验", "source", "target", "keys", "expectExists"),
                 template("FIELD_EQUALS", "跨表字段一致性校验", "source", "target", "key", "sourceField", "targetField"),
+                template("JOIN_ASSERT", "跨表 Join 断言校验", "source", "target", "keys", "assert"),
                 template("AGGREGATION_EQUALS", "聚合一致性校验", "source", "target", "groupBy", "sum", "targetField"),
                 template("AGGREGATE_ASSERT", "聚合断言校验", "source", "target", "groupBy", "aggregate", "assert"),
+                template("DUPLICATE_ASSERT", "分组次数断言校验", "table", "groupBy", "assert"),
                 template("DUPLICATE_CHECK", "重复记录校验", "tableName", "groupBy")));
     }
 

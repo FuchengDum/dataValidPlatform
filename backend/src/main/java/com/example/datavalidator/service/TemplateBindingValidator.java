@@ -4,6 +4,7 @@ import com.example.datavalidator.exception.BadRequestException;
 import com.example.datavalidator.persistence.DataTableSnapshotEntity;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -41,11 +42,17 @@ class TemplateBindingValidator {
             case "FIELD_EQUALS":
                 validateFieldEquals(params, headersByTable);
                 break;
+            case "JOIN_ASSERT":
+                validateJoinAssert(params, headersByTable);
+                break;
             case "AGGREGATION_EQUALS":
                 validateAggregationEquals(params, headersByTable);
                 break;
             case "AGGREGATE_ASSERT":
                 validateAggregateAssert(params, headersByTable);
+                break;
+            case "DUPLICATE_ASSERT":
+                validateDuplicateAssert(params, headersByTable);
                 break;
             case "DUPLICATE_CHECK":
                 validateDuplicateCheck(params, headersByTable);
@@ -129,6 +136,35 @@ class TemplateBindingValidator {
         requireField(targetHeaders, requireParam(params, "targetField"));
     }
 
+    @SuppressWarnings("unchecked")
+    private static void validateJoinAssert(Map<String, Object> params, Map<String, List<String>> headersByTable) {
+        String source = requireParam(params, "source");
+        String target = requireParam(params, "target");
+        List<String> sourceHeaders = requireTable(headersByTable, source);
+        List<String> targetHeaders = requireTable(headersByTable, target);
+        requireJoinKeys(params, sourceHeaders, targetHeaders);
+        if (!(params.get("assert") instanceof Map)) {
+            throw new BadRequestException("模板参数 assert 格式不支持");
+        }
+        Map<String, Object> assertion = (Map<String, Object>) params.get("assert");
+        String operator = asString(assertion.get("op"));
+        if (isBlank(operator)) {
+            operator = asString(assertion.get("operator"));
+        }
+        if (!isJoinOperator(operator)) {
+            throw new BadRequestException("关联断言操作符不支持: " + operator);
+        }
+        validateTolerance(assertion.get("tolerance"));
+        validateJoinNode(assertion.get("left"), sourceHeaders, targetHeaders);
+        validateJoinNode(assertion.get("right"), sourceHeaders, targetHeaders);
+        if (params.containsKey("sourceWhere")) {
+            RowExpressionEvaluator.validatePredicate(params.get("sourceWhere"), sourceHeaders);
+        }
+        if (params.containsKey("targetWhere")) {
+            RowExpressionEvaluator.validatePredicate(params.get("targetWhere"), targetHeaders);
+        }
+    }
+
     private static void validateAggregationEquals(Map<String, Object> params, Map<String, List<String>> headersByTable) {
         List<String> sourceHeaders = requireTable(headersByTable, requireParam(params, "source"));
         List<String> targetHeaders = requireTable(headersByTable, requireParam(params, "target"));
@@ -195,6 +231,61 @@ class TemplateBindingValidator {
     }
 
     @SuppressWarnings("unchecked")
+    private static void validateDuplicateAssert(Map<String, Object> params, Map<String, List<String>> headersByTable) {
+        List<String> headers = requireTable(headersByTable, requireTableParam(params));
+        List<String> fields = fields(params.get("groupBy"));
+        if (fields.isEmpty()) {
+            throw new BadRequestException("模板参数 groupBy 不能为空");
+        }
+        for (String field : fields) {
+            requireField(headers, field);
+        }
+        if (!(params.get("assert") instanceof Map)) {
+            throw new BadRequestException("模板参数 assert 格式不支持");
+        }
+        validateDuplicateAssertion((Map<String, Object>) params.get("assert"));
+        if (params.containsKey("where")) {
+            RowExpressionEvaluator.validatePredicate(params.get("where"), headers);
+        }
+    }
+
+    private static String requireTableParam(Map<String, Object> params) {
+        String tableName = asString(params.get("table"));
+        if (isBlank(tableName)) {
+            tableName = asString(params.get("tableName"));
+        }
+        if (isBlank(tableName)) {
+            throw new BadRequestException("模板参数 table 不能为空");
+        }
+        return tableName;
+    }
+
+    private static void validateDuplicateAssertion(Map<String, Object> assertion) {
+        String operator = asString(assertion.get("op"));
+        if (isBlank(operator)) {
+            operator = asString(assertion.get("operator"));
+        }
+        Object rawCount = assertion.containsKey("count") ? assertion.get("count") : assertion.get("value");
+        String countText = asString(rawCount).trim();
+        for (String candidate : Arrays.asList(">=", "<=", "==", "!=", ">", "<", "=")) {
+            if (countText.startsWith(candidate)) {
+                operator = candidate;
+                countText = countText.substring(candidate.length()).trim();
+                break;
+            }
+        }
+        if (isBlank(operator)) {
+            operator = "<=";
+        }
+        if (!isAggregateOperator(operator)) {
+            throw new BadRequestException("分组次数断言操作符不支持: " + operator);
+        }
+        if (!ValueParsers.decimal(countText).isPresent()) {
+            throw new BadRequestException("模板参数 assert.count 必须是数值");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
     private static void requireAggregateGroupBy(Map<String, Object> params, List<String> sourceHeaders,
                                                 List<String> targetHeaders) {
         int matchedKeys = 0;
@@ -222,6 +313,47 @@ class TemplateBindingValidator {
             requireField(sourceHeaders, groupBy);
             requireField(targetHeaders, targetKey);
         }
+    }
+
+    private static void requireJoinKeys(Map<String, Object> params, List<String> sourceHeaders,
+                                        List<String> targetHeaders) {
+        if (params.containsKey("keys") || params.containsKey("key")) {
+            requireRelationKeys(params, sourceHeaders, targetHeaders);
+            return;
+        }
+        Map<String, Object> joinParams = new LinkedHashMap<>();
+        joinParams.put("keys", params.get("join"));
+        requireRelationKeys(joinParams, sourceHeaders, targetHeaders);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void validateJoinNode(Object rawNode, List<String> sourceHeaders, List<String> targetHeaders) {
+        if (rawNode instanceof Number || rawNode instanceof String) {
+            return;
+        }
+        if (!(rawNode instanceof Map)) {
+            throw new BadRequestException("关联断言表达式节点格式不支持");
+        }
+        Map<String, Object> node = (Map<String, Object>) rawNode;
+        String sourceField = asString(node.get("sourceField"));
+        if (!isBlank(sourceField)) {
+            requireField(sourceHeaders, sourceField);
+            return;
+        }
+        String targetField = asString(node.get("targetField"));
+        if (!isBlank(targetField)) {
+            requireField(targetHeaders, targetField);
+            return;
+        }
+        if (node.containsKey("literal") || node.containsKey("value")) {
+            return;
+        }
+        String operator = asString(node.get("op"));
+        if (!isArithmeticOperator(operator)) {
+            throw new BadRequestException("不支持的关联断言算术操作符: " + operator);
+        }
+        validateJoinNode(node.get("left"), sourceHeaders, targetHeaders);
+        validateJoinNode(node.get("right"), sourceHeaders, targetHeaders);
     }
 
     @SuppressWarnings("unchecked")
@@ -253,6 +385,14 @@ class TemplateBindingValidator {
         return "==".equals(operator) || "=".equals(operator) || "!=".equals(operator)
                 || ">".equals(operator) || ">=".equals(operator)
                 || "<".equals(operator) || "<=".equals(operator);
+    }
+
+    private static boolean isJoinOperator(String operator) {
+        return isAggregateOperator(operator);
+    }
+
+    private static boolean isArithmeticOperator(String operator) {
+        return "+".equals(operator) || "-".equals(operator) || "*".equals(operator) || "/".equals(operator);
     }
 
     @SuppressWarnings("unchecked")

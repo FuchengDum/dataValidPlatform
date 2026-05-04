@@ -85,7 +85,7 @@ class RuleTemplateSemanticMapperTest {
     }
 
     @Test
-    void mapsCrossTableFieldEqualityToFieldEqualsTemplate() {
+    void mapsCrossTableFieldEqualityToJoinAssertTemplate() {
         RuleTemplateSemanticMatch match = mapper.recommend(rule("R011", "支付用户与订单用户一致",
                 "支付表用户ID应与订单表用户ID一致", "t_payment.用户ID = t_order.用户ID by 订单ID",
                 "t_payment,t_order"),
@@ -94,12 +94,11 @@ class RuleTemplateSemanticMapperTest {
                         table("t_order", "订单ID", "用户ID")));
 
         assertThat(match.isApplicable()).isTrue();
-        assertThat(match.getTemplateCode()).isEqualTo("FIELD_EQUALS");
+        assertThat(match.getTemplateCode()).isEqualTo("JOIN_ASSERT");
         assertThat(match.getTemplateParams()).containsEntry("source", "t_payment");
         assertThat(match.getTemplateParams()).containsEntry("target", "t_order");
-        assertThat(match.getTemplateParams()).containsEntry("key", "订单ID");
-        assertThat(match.getTemplateParams()).containsEntry("sourceField", "用户ID");
-        assertThat(match.getTemplateParams()).containsEntry("targetField", "用户ID");
+        assertThat(match.getTemplateParams().get("keys")).asList().hasSize(1);
+        assertThat(match.getTemplateParams().get("assert")).asString().contains("用户ID");
     }
 
     @Test
@@ -121,15 +120,16 @@ class RuleTemplateSemanticMapperTest {
     }
 
     @Test
-    void mapsUniqueCombinationToDuplicateCheckTemplate() {
+    void mapsUniqueCombinationToDuplicateAssertTemplate() {
         RuleTemplateSemanticMatch match = mapper.recommend(rule("R013", "重复支付检查",
                 "同一订单ID和支付状态不得重复", "unique(订单ID, 支付状态)", "t_payment"),
                 tables(table("t_payment", "支付ID", "订单ID", "支付状态")));
 
         assertThat(match.isApplicable()).isTrue();
-        assertThat(match.getTemplateCode()).isEqualTo("DUPLICATE_CHECK");
-        assertThat(match.getTemplateParams()).containsEntry("tableName", "t_payment");
+        assertThat(match.getTemplateCode()).isEqualTo("DUPLICATE_ASSERT");
+        assertThat(match.getTemplateParams()).containsEntry("table", "t_payment");
         assertThat(match.getTemplateParams().get("groupBy")).asList().containsExactly("订单ID", "支付状态");
+        assertThat(match.getTemplateParams().get("assert")).asString().contains("<=", "1");
     }
 
     @Test
@@ -239,7 +239,7 @@ class RuleTemplateSemanticMapperTest {
                         "t_order_item,t_product", "EXISTS_IN_TABLE"),
                 expected("R019", "明细-商品价格一致性", "明细中的单价应与商品表中的售价一致",
                         "SELECT i.* FROM t_order_item i JOIN t_product p ON i.商品ID=p.商品ID WHERE ABS(i.单价 - p.售价) > 0.01",
-                        "t_order_item,t_product", "FIELD_EQUALS"),
+                        "t_order_item,t_product", "JOIN_ASSERT"),
                 expected("R020", "订单-支付金额一致性", "订单实付金额应等于支付表中对应支付金额之和",
                         "SELECT o.订单ID, o.实付金额, SUM(p.支付金额) AS 已支付 FROM t_order o LEFT JOIN t_payment p ON o.订单ID=p.订单ID GROUP BY o.订单ID, o.实付金额 HAVING ABS(o.实付金额 - SUM(p.支付金额)) > 0.01",
                         "t_order,t_payment", "AGGREGATE_ASSERT"),
@@ -248,7 +248,7 @@ class RuleTemplateSemanticMapperTest {
                         "t_payment,t_order", "EXISTS_IN_TABLE"),
                 expected("R024", "支付-订单用户一致性", "支付记录中的用户ID应与订单中的用户ID一致",
                         "SELECT p.* FROM t_payment p JOIN t_order o ON p.订单ID=o.订单ID WHERE p.用户ID != o.用户ID",
-                        "t_payment,t_order", "FIELD_EQUALS"),
+                        "t_payment,t_order", "JOIN_ASSERT"),
                 expected("R025", "订单状态时间逻辑校验", "待支付订单不应有支付时间；已支付/已发货/已完成订单支付时间不得早于下单时间",
                         "SELECT * FROM t_order WHERE (订单状态='待支付' AND 支付时间 IS NOT NULL) OR (订单状态 IN ('已支付','已发货','已完成') AND 支付时间<下单时间)",
                         "t_order", "ROW_EXPRESSION"),
@@ -256,7 +256,7 @@ class RuleTemplateSemanticMapperTest {
                         "SELECT * FROM t_inventory_log WHERE 变动后库存 < 0", "t_inventory_log", "NON_NEGATIVE"),
                 expected("R029", "同一订单重复支付校验", "同一订单不应有多条支付成功记录(防重复支付)",
                         "SELECT 订单ID, COUNT(*) AS 支付次数 FROM t_payment WHERE 支付状态='支付成功' GROUP BY 订单ID HAVING COUNT(*)>1",
-                        "t_payment", "DUPLICATE_CHECK")
+                        "t_payment", "DUPLICATE_ASSERT")
         );
     }
 

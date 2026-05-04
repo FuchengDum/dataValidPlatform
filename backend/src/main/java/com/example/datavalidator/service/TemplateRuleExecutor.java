@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -44,10 +45,15 @@ public class TemplateRuleExecutor {
                 return relationExists(rule, tables, params);
             case "FIELD_EQUALS":
                 return fieldEquals(rule, tables, params);
+            case "JOIN_ASSERT":
+                return joinAssert(rule, tables, params);
             case "AGGREGATION_EQUALS":
                 return aggregationEquals(rule, tables, params);
             case "AGGREGATE_ASSERT":
                 return aggregateAssert(rule, tables, params);
+            case "DUPLICATE_ASSERT":
+                return duplicateAssert(rule, table(tables, params), fields(params.get("groupBy")),
+                        params.get("where"), params.get("assert"));
             case "DUPLICATE_CHECK":
                 return duplicateCheck(rule, table(tables, params), fields(params.get("groupBy")), params.get("where"));
             default:
@@ -267,6 +273,161 @@ public class TemplateRuleExecutor {
         return findings;
     }
 
+    private List<ValidationFinding> joinAssert(RuleDefinition rule, Map<String, DataTable> tables,
+                                               Map<String, Object> params) {
+        DataTable source = tables.get(asString(params.get("source")));
+        DataTable target = tables.get(asString(params.get("target")));
+        List<RelationKey> keys = joinKeys(params);
+        JoinAssertion assertion = joinAssertion(params.get("assert"));
+        if (source == null || target == null || keys.isEmpty() || assertion == null) {
+            return Collections.emptyList();
+        }
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (DataRow sourceRow : source.getRows()) {
+            if (!matchesWhere(params.get("sourceWhere"), sourceRow)) {
+                continue;
+            }
+            List<DataRow> matchedRows = matchedTargets(target, keys, sourceRow, params.get("targetWhere"));
+            if (matchedRows.isEmpty()) {
+                findings.add(finding(rule, source, sourceRow, keys.get(0).sourceField,
+                        source.getLogicalName() + "." + keySummary(sourceRow, keys, true),
+                        target.getLogicalName() + " 中存在匹配记录",
+                        "关联记录不存在", "RELATION"));
+                continue;
+            }
+            for (DataRow targetRow : matchedRows) {
+                JoinValue actual = joinValue(assertion.left, source, sourceRow, target, targetRow);
+                JoinValue expected = joinValue(assertion.right, source, sourceRow, target, targetRow);
+                if (!joinCompare(actual, expected, assertion)) {
+                    findings.add(finding(rule, source, sourceRow, actual.fieldName,
+                            actual.summary + "；" + expected.summary,
+                            actual.text + " " + assertion.operator + " " + expected.text,
+                            "关联断言不成立", "RELATION"));
+                }
+            }
+        }
+        return findings;
+    }
+
+    private List<DataRow> matchedTargets(DataTable target, List<RelationKey> keys,
+                                         DataRow sourceRow, Object targetWhere) {
+        List<DataRow> result = new ArrayList<>();
+        for (DataRow targetRow : target.getRows()) {
+            if (keysMatch(sourceRow, targetRow, keys) && matchesWhere(targetWhere, targetRow)) {
+                result.add(targetRow);
+            }
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private JoinAssertion joinAssertion(Object rawAssert) {
+        if (!(rawAssert instanceof Map)) {
+            return null;
+        }
+        Map<String, Object> assertion = (Map<String, Object>) rawAssert;
+        String operator = asString(assertion.get("op"));
+        if (ValueParsers.isBlank(operator)) {
+            operator = asString(assertion.get("operator"));
+        }
+        if (!isSupportedJoinOperator(operator)) {
+            return null;
+        }
+        return new JoinAssertion(assertion.get("left"), operator, assertion.get("right"),
+                decimal(assertion.get("tolerance")));
+    }
+
+    @SuppressWarnings("unchecked")
+    private JoinValue joinValue(Object rawNode, DataTable source, DataRow sourceRow,
+                                DataTable target, DataRow targetRow) {
+        if (rawNode instanceof Number || rawNode instanceof String) {
+            String value = asString(rawNode);
+            return new JoinValue(value, value, value, ValueParsers.decimal(value), "");
+        }
+        if (!(rawNode instanceof Map)) {
+            return JoinValue.unavailable();
+        }
+        Map<String, Object> node = (Map<String, Object>) rawNode;
+        String sourceField = asString(node.get("sourceField"));
+        if (!ValueParsers.isBlank(sourceField)) {
+            String value = sourceRow.value(sourceField);
+            return new JoinValue(source.getLogicalName() + "." + sourceField,
+                    source.getLogicalName() + "." + sourceField + "=" + value,
+                    value, ValueParsers.decimal(value), sourceField);
+        }
+        String targetField = asString(node.get("targetField"));
+        if (!ValueParsers.isBlank(targetField)) {
+            String value = targetRow.value(targetField);
+            return new JoinValue(target.getLogicalName() + "." + targetField,
+                    target.getLogicalName() + "." + targetField + "=" + value,
+                    value, ValueParsers.decimal(value), targetField);
+        }
+        if (node.containsKey("literal") || node.containsKey("value")) {
+            Object literal = node.containsKey("literal") ? node.get("literal") : node.get("value");
+            String value = asString(literal);
+            return new JoinValue(value, value, value, ValueParsers.decimal(value), "");
+        }
+        JoinValue left = joinValue(node.get("left"), source, sourceRow, target, targetRow);
+        JoinValue right = joinValue(node.get("right"), source, sourceRow, target, targetRow);
+        String operator = asString(node.get("op"));
+        Optional<BigDecimal> calculated = calculateJoinValue(left, operator, right);
+        String text = left.text + " " + operator + " " + right.text;
+        String value = calculated.map(this::formatDecimal).orElse("无法计算");
+        return new JoinValue(text, text + "=" + value, value, calculated, left.fieldName);
+    }
+
+    private Optional<BigDecimal> calculateJoinValue(JoinValue left, String operator, JoinValue right) {
+        if (!left.decimal.isPresent() || !right.decimal.isPresent()) {
+            return Optional.empty();
+        }
+        BigDecimal leftValue = left.decimal.get();
+        BigDecimal rightValue = right.decimal.get();
+        switch (operator) {
+            case "+": return Optional.of(leftValue.add(rightValue));
+            case "-": return Optional.of(leftValue.subtract(rightValue));
+            case "*": return Optional.of(leftValue.multiply(rightValue));
+            case "/":
+                if (rightValue.compareTo(BigDecimal.ZERO) == 0) {
+                    return Optional.empty();
+                }
+                return Optional.of(leftValue.divide(rightValue, 10, java.math.RoundingMode.HALF_UP)
+                        .stripTrailingZeros());
+            default: return Optional.empty();
+        }
+    }
+
+    private boolean joinCompare(JoinValue actual, JoinValue expected, JoinAssertion assertion) {
+        if (actual.decimal.isPresent() && expected.decimal.isPresent()) {
+            int compared = actual.decimal.get().compareTo(expected.decimal.get());
+            BigDecimal diff = actual.decimal.get().subtract(expected.decimal.get()).abs();
+            switch (assertion.operator) {
+                case "==":
+                case "=":
+                    return diff.compareTo(assertion.tolerance) <= 0;
+                case "!=":
+                    return diff.compareTo(assertion.tolerance) > 0;
+                case ">": return compared > 0;
+                case ">=": return compared >= 0;
+                case "<": return compared < 0;
+                case "<=": return compared <= 0;
+                default: return false;
+            }
+        }
+        int compared = actual.rawValue.compareTo(expected.rawValue);
+        switch (assertion.operator) {
+            case "==":
+            case "=":
+                return actual.rawValue.equals(expected.rawValue);
+            case "!=":
+                return !actual.rawValue.equals(expected.rawValue);
+            case ">": return compared > 0;
+            case ">=": return compared >= 0;
+            case "<": return compared < 0;
+            case "<=": return compared <= 0;
+            default: return false;
+        }
+    }
+
     private List<ValidationFinding> aggregationEquals(RuleDefinition rule, Map<String, DataTable> tables,
                                                       Map<String, Object> params) {
         DataTable source = tables.get(asString(params.get("source")));
@@ -425,6 +586,15 @@ public class TemplateRuleExecutor {
         return relationKeys(params.get("groupBy"), asString(params.get("groupBy")), asString(params.get("targetKey")));
     }
 
+    private List<RelationKey> joinKeys(Map<String, Object> params) {
+        List<RelationKey> keys = relationKeys(params.get("keys"), asString(params.get("key")),
+                asString(params.get("targetKey")));
+        if (keys.isEmpty()) {
+            keys = relationKeys(params.get("join"), "", "");
+        }
+        return keys;
+    }
+
     @SuppressWarnings("unchecked")
     private AggregateSpec aggregateSpec(Object rawAggregate, String fallbackSumField) {
         if (rawAggregate instanceof Map) {
@@ -566,8 +736,102 @@ public class TemplateRuleExecutor {
         return findings;
     }
 
+    private List<ValidationFinding> duplicateAssert(RuleDefinition rule, DataTable table, List<String> groupBy,
+                                                    Object where, Object rawAssert) {
+        DuplicateAssertion assertion = duplicateAssertion(rawAssert);
+        if (table == null || groupBy.isEmpty() || assertion == null) {
+            return Collections.emptyList();
+        }
+        Map<String, List<DataRow>> groups = new HashMap<>();
+        for (DataRow row : table.getRows()) {
+            if (where instanceof Map && !RowExpressionEvaluator.matches(where, row)) {
+                continue;
+            }
+            groups.computeIfAbsent(groupKey(row, groupBy), ignored -> new ArrayList<>()).add(row);
+        }
+        List<ValidationFinding> findings = new ArrayList<>();
+        for (List<DataRow> rows : groups.values()) {
+            int count = rows.size();
+            if (compareCount(count, assertion)) {
+                continue;
+            }
+            for (DataRow row : rows) {
+                findings.add(finding(rule, table, row, groupBy.get(0),
+                        groupSummary(row, groupBy) + "；count=" + count,
+                        "count " + assertion.operator + " " + assertion.count,
+                        "分组次数断言不成立", "DUPLICATE"));
+            }
+        }
+        return findings;
+    }
+
+    @SuppressWarnings("unchecked")
+    private DuplicateAssertion duplicateAssertion(Object rawAssert) {
+        if (!(rawAssert instanceof Map)) {
+            return null;
+        }
+        Map<String, Object> assertion = (Map<String, Object>) rawAssert;
+        String operator = asString(assertion.get("op"));
+        if (ValueParsers.isBlank(operator)) {
+            operator = asString(assertion.get("operator"));
+        }
+        Object count = assertion.containsKey("count") ? assertion.get("count") : assertion.get("value");
+        DuplicateAssertion parsed = duplicateAssertion(operator, count);
+        if (parsed != null) {
+            return parsed;
+        }
+        if (Boolean.TRUE.equals(assertion.get("unique"))) {
+            return new DuplicateAssertion("<=", 1);
+        }
+        return null;
+    }
+
+    private DuplicateAssertion duplicateAssertion(String operator, Object rawCount) {
+        String text = asString(rawCount).trim();
+        String parsedOperator = operator;
+        String parsedCount = text;
+        for (String candidate : Arrays.asList(">=", "<=", "==", "!=", ">", "<", "=")) {
+            if (text.startsWith(candidate)) {
+                parsedOperator = candidate;
+                parsedCount = text.substring(candidate.length()).trim();
+                break;
+            }
+        }
+        if (ValueParsers.isBlank(parsedOperator)) {
+            parsedOperator = "<=";
+        }
+        if (!isSupportedAggregateOperator(parsedOperator)) {
+            return null;
+        }
+        Optional<BigDecimal> count = ValueParsers.decimal(parsedCount);
+        if (!count.isPresent()) {
+            return null;
+        }
+        return new DuplicateAssertion(parsedOperator, count.get().intValue());
+    }
+
+    private boolean compareCount(int actual, DuplicateAssertion assertion) {
+        int compared = Integer.compare(actual, assertion.count);
+        switch (assertion.operator) {
+            case "==":
+            case "=":
+                return compared == 0;
+            case "!=":
+                return compared != 0;
+            case ">": return compared > 0;
+            case ">=": return compared >= 0;
+            case "<": return compared < 0;
+            case "<=": return compared <= 0;
+            default: return false;
+        }
+    }
+
     private DataTable table(Map<String, DataTable> tables, Map<String, Object> params) {
-        return tables.get(asString(params.get("tableName")));
+        String tableName = asString(params.get("tableName"));
+        if (ValueParsers.isBlank(tableName)) {
+            tableName = asString(params.get("table"));
+        }
+        return tables.get(tableName);
     }
 
     private Map<String, DataRow> indexBy(DataTable table, String key) {
@@ -580,6 +844,11 @@ public class TemplateRuleExecutor {
 
     private String groupKey(DataRow row, List<String> fields) {
         return fields.stream().map(row::value).collect(Collectors.joining("\u001F"));
+    }
+
+    private String groupSummary(DataRow row, List<String> fields) {
+        return fields.stream().map(field -> field + "=" + row.value(field))
+                .collect(Collectors.joining("；"));
     }
 
     private List<String> sourceFields(List<RelationKey> keys) {
@@ -629,6 +898,10 @@ public class TemplateRuleExecutor {
         return "==".equals(operator) || "=".equals(operator) || "!=".equals(operator)
                 || ">".equals(operator) || ">=".equals(operator)
                 || "<".equals(operator) || "<=".equals(operator);
+    }
+
+    private boolean isSupportedJoinOperator(String operator) {
+        return isSupportedAggregateOperator(operator);
     }
 
     private String asString(Object value) {
@@ -721,6 +994,50 @@ public class TemplateRuleExecutor {
 
         void add(BigDecimal amount) {
             value = value.add(amount);
+        }
+    }
+
+    private static class DuplicateAssertion {
+        private final String operator;
+        private final int count;
+
+        DuplicateAssertion(String operator, int count) {
+            this.operator = operator;
+            this.count = count;
+        }
+    }
+
+    private static class JoinAssertion {
+        private final Object left;
+        private final String operator;
+        private final Object right;
+        private final BigDecimal tolerance;
+
+        JoinAssertion(Object left, String operator, Object right, BigDecimal tolerance) {
+            this.left = left;
+            this.operator = operator;
+            this.right = right;
+            this.tolerance = tolerance;
+        }
+    }
+
+    private static class JoinValue {
+        private final String text;
+        private final String summary;
+        private final String rawValue;
+        private final Optional<BigDecimal> decimal;
+        private final String fieldName;
+
+        JoinValue(String text, String summary, String rawValue, Optional<BigDecimal> decimal, String fieldName) {
+            this.text = text;
+            this.summary = summary;
+            this.rawValue = rawValue;
+            this.decimal = decimal;
+            this.fieldName = fieldName;
+        }
+
+        static JoinValue unavailable() {
+            return new JoinValue("未知表达式", "未知表达式=无法计算", "无法计算", Optional.empty(), "");
         }
     }
 

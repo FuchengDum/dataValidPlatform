@@ -432,10 +432,9 @@ class RuleTemplateSemanticMapper {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("source", tables.get(0));
         params.put("target", tables.get(1));
-        params.put("key", key);
-        params.put("sourceField", pair.sourceField);
-        params.put("targetField", pair.targetField);
-        return applicable("FIELD_EQUALS", params, "基于跨表字段一致语义推荐模板。", "HIGH");
+        params.put("keys", Collections.singletonList(relationKey(key, key)));
+        params.put("assert", joinAssertion(pair.sourceField, pair.targetField, text));
+        return applicable("JOIN_ASSERT", params, "基于跨表 join 断言语义推荐模板。", "HIGH");
     }
 
     private RuleTemplateSemanticMatch aggregation(RuleDefinitionEntity rule,
@@ -483,13 +482,14 @@ class RuleTemplateSemanticMapper {
             return RuleTemplateSemanticMatch.unavailable("重复检查规则缺少分组字段。");
         }
         Map<String, Object> params = new LinkedHashMap<>();
-        params.put("tableName", tableName);
+        params.put("table", tableName);
         params.put("groupBy", fields);
         Object where = duplicateWhere(tableFields.getOrDefault(tableName, Collections.emptyList()), text);
         if (where != null) {
             params.put("where", where);
         }
-        return applicable("DUPLICATE_CHECK", params, "基于唯一组合语义推荐重复检查模板。", "HIGH");
+        params.put("assert", duplicateAssertion(text));
+        return applicable("DUPLICATE_ASSERT", params, "基于分组次数断言语义推荐模板。", "HIGH");
     }
 
     private RuleTemplateSemanticMatch applicable(String templateCode, Map<String, Object> params,
@@ -524,6 +524,29 @@ class RuleTemplateSemanticMapper {
         return key;
     }
 
+    private Map<String, Object> joinAssertion(String sourceField, String targetField, String text) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("left", sourceField(sourceField));
+        assertion.put("op", "==");
+        assertion.put("right", targetField(targetField));
+        if (containsAny(text, "abs", "ABS", "0.01", "近似", "误差")) {
+            assertion.put("tolerance", 0.01);
+        }
+        return assertion;
+    }
+
+    private Map<String, Object> sourceField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("sourceField", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> targetField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("targetField", fieldName);
+        return expression;
+    }
+
     private Map<String, Object> relationParams(String source, String target,
                                                List<Map<String, Object>> keys,
                                                boolean expectExists) {
@@ -551,6 +574,19 @@ class RuleTemplateSemanticMapper {
         } else {
             assertion.put("targetField", targetField);
         }
+        return assertion;
+    }
+
+    private Map<String, Object> duplicateAssertion(String text) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        if (containsAny(text, "至少", "不少于", ">=")) {
+            assertion.put("op", ">=");
+        } else if (containsAny(text, "恰好", "等于", "==")) {
+            assertion.put("op", "==");
+        } else {
+            assertion.put("op", "<=");
+        }
+        assertion.put("count", 1);
         return assertion;
     }
 

@@ -205,6 +205,49 @@ class RuleBindingServiceTest {
     }
 
     @Test
+    void updateBindingAcceptsJoinAssertWithCompositeKeysAndAssertion() {
+        RuleDefinitionEntity rule = rule("ds-1", "C013", "跨表 join 断言");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C013", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C013")).thenReturn(Optional.empty());
+        when(bindingRepository.save(any(RuleBindingEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_order_item", "商品ID", "单价"),
+                table("ds-1", "t_product", "商品ID", "售价")));
+        RuleBindingService.BindingRequest request = request("JOIN_ASSERT")
+                .param("source", "t_order_item")
+                .param("target", "t_product")
+                .param("keys", Arrays.asList(relationKey("商品ID", "商品ID")))
+                .param("assert", joinAssert(sourceField("单价"), "==", targetField("售价"), "0.01"))
+                .build();
+
+        RuleBindingService.BindingView saved = service.updateBinding("ds-1", "C013", request);
+
+        assertThat(saved.getExecutorType()).isEqualTo("TEMPLATE");
+        assertThat(saved.getTemplateCode()).isEqualTo("JOIN_ASSERT");
+    }
+
+    @Test
+    void updateBindingAcceptsDuplicateAssertWithCountAssertionAndFilter() {
+        RuleDefinitionEntity rule = rule("ds-1", "C014", "重复支付检查");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("C014", "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", "C014")).thenReturn(Optional.empty());
+        when(bindingRepository.save(any(RuleBindingEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_payment", "支付ID", "订单ID", "支付状态")));
+        RuleBindingService.BindingRequest request = request("DUPLICATE_ASSERT")
+                .param("table", "t_payment")
+                .param("groupBy", Arrays.asList("订单ID"))
+                .param("where", condition(field("支付状态"), "==", literal("支付成功")))
+                .param("assert", duplicateAssert("<=", 1))
+                .build();
+
+        RuleBindingService.BindingView saved = service.updateBinding("ds-1", "C014", request);
+
+        assertThat(saved.getExecutorType()).isEqualTo("TEMPLATE");
+        assertThat(saved.getTemplateCode()).isEqualTo("DUPLICATE_ASSERT");
+    }
+
+    @Test
     void updateBindingRejectsAggregationWhenTargetKeyMissingInTargetTable() {
         RuleDefinitionEntity rule = rule("ds-1", "C008", "聚合一致");
         when(ruleRepository.findById(new RuleDefinitionEntity.Key("C008", "ds-1"))).thenReturn(Optional.of(rule));
@@ -374,6 +417,27 @@ class RuleBindingServiceTest {
         return key;
     }
 
+    private Map<String, Object> joinAssert(Object left, String operator, Object right, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("left", left);
+        assertion.put("op", operator);
+        assertion.put("right", right);
+        assertion.put("tolerance", tolerance);
+        return assertion;
+    }
+
+    private Map<String, Object> sourceField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("sourceField", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> targetField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("targetField", fieldName);
+        return expression;
+    }
+
     private Map<String, Object> aggregate(String fn, String field) {
         Map<String, Object> aggregate = new LinkedHashMap<>();
         aggregate.put("fn", fn);
@@ -386,6 +450,13 @@ class RuleBindingServiceTest {
         assertion.put("op", operator);
         assertion.put("aggregate", targetAggregate);
         assertion.put("tolerance", tolerance);
+        return assertion;
+    }
+
+    private Map<String, Object> duplicateAssert(String operator, int count) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("count", count);
         return assertion;
     }
 

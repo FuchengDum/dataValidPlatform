@@ -14,20 +14,22 @@
    - `ROW_EXPRESSION`：结构化行表达式。
    - `EXISTS_IN_TABLE`：跨表存在性。
    - `FIELD_EQUALS`：跨表字段一致。
+   - `JOIN_ASSERT`：结构化跨表 join 断言。
    - `AGGREGATION_EQUALS`：分组汇总一致。
    - `AGGREGATE_ASSERT`：结构化聚合断言。
+   - `DUPLICATE_ASSERT`：结构化分组次数断言。
    - `DUPLICATE_CHECK`：重复记录检查。
 4. `FIELD_EXPRESSION` 已支持多条件表达式，并已将异常详情调整为“计算明细 + 失败条件”。
 5. 绑定接口已对模板参数做表名、字段名和表达式可解析性校验。
 
 当前主要不足：
 
-1. AI 推荐范围仍偏保守，尚未把所有已可执行模板纳入可应用推荐。
-2. R006 金额关系仍存在规则特例，长期看不利于扩展更多业务规则。
-3. AI 推荐校验和绑定校验存在继续抽象统一的空间。
-4. 跨表、聚合、重复类模板的异常详情还可以进一步贴近业务语义。
-5. 前端推荐预览目前以参数摘要为主，缺少当前绑定与推荐绑定的对比。
-6. 当前业务表仍主要通过 Excel sheet 导入并落入 JSON 行快照，和后续面向数据库业务源的目标不一致。
+1. 统一 DSL 的主要执行形态已落地，后续重点从新增执行器转向默认绑定迁移和兼容模板收敛。
+2. `FIELD_EQUALS`、`AGGREGATION_EQUALS`、`DUPLICATE_CHECK` 仍作为兼容模板存在，后续需要逐步迁移到更通用的 `JOIN_ASSERT`、`AGGREGATE_ASSERT`、`DUPLICATE_ASSERT`。
+3. R017、R020、R030 的语义推荐已可落到 `AGGREGATE_ASSERT`，但默认导入绑定仍存在旧模板兼容路径，需要补齐迁移策略。
+4. R030 的跨表指标级聚合能力已在执行器层验证，但还需要进入 30 条规则语义映射回归清单。
+5. R029 的语义推荐已可落到 `DUPLICATE_ASSERT`，但默认导入绑定仍需从 `DUPLICATE_CHECK` 迁移。
+6. 生产化业务库仍需要从演示 H2 形态进一步拆分为系统库和业务只读库。
 
 ## 2. 拓展目标
 
@@ -132,9 +134,9 @@ public class RuleBindingRecommendationResult {
 | 单表字段表达式 | `FIELD_EXPRESSION` | 已有自由文本表达式绑定 | `tableName`, `expression` |
 | 单行结构化表达式 | `ROW_EXPRESSION` | 等于、不得大于、小于等于、计算关系、字段间算术 | `tableName`, `conditions` |
 | 跨表存在性 | `EXISTS_IN_TABLE` | 必须存在于、关联记录、主外键、商品/订单/支付引用 | `source`, `target`, `key` |
-| 跨表字段一致 | `FIELD_EQUALS` | 应与、必须等于、两表字段一致 | `source`, `target`, `key`, `sourceField`, `targetField` |
+| 跨表字段一致 | `JOIN_ASSERT` | 应与、必须等于、两表字段一致 | `source`, `target`, `keys`, `assert` |
 | 汇总一致 | `AGGREGATION_EQUALS` | 小计之和、汇总、合计、sum、明细到主表 | `source`, `target`, `groupBy`, `sum`, `targetField` |
-| 重复检查 | `DUPLICATE_CHECK` | 唯一、重复、不得重复、唯一组合 | `tableName`, `groupBy` |
+| 重复检查 | `DUPLICATE_ASSERT` | 唯一、重复、不得重复、唯一组合、最多/至少 N 次 | `table`, `groupBy`, `assert` |
 
 R006 金额关系不再作为孤立硬编码规则处理。后续应通过结构化 `ROW_EXPRESSION` 映射生成：
 
@@ -218,6 +220,10 @@ R006 金额关系不再作为孤立硬编码规则处理。后续应通过结构
 2. `RELATION_EXISTS` 已作为关系存在 DSL 的当前执行形态，支持单 key、复合 key、`sourceWhere`、`targetWhere`、`sourceExists` 前置关联过滤，以及 `expectExists=false` 的反向不存在校验。
 3. R021、R022、R026、R028 已可通过 `RELATION_EXISTS` 统一表达，不再依赖规则编号特例。
 4. `AGGREGATE_ASSERT` 已作为聚合断言 DSL 的当前执行形态，支持分组汇总与目标字段或另一组汇总结果比较。
+5. `JOIN_ASSERT` 已作为跨表 join 断言 DSL 的当前执行形态，支持 `keys`、`sourceWhere`、`targetWhere`、字段/表达式断言和数值容差。
+6. `FIELD_EQUALS` 仍作为旧版跨表字段一致兼容模板保留。
+7. `DUPLICATE_ASSERT` 已作为分组次数断言 DSL 的当前执行形态，支持过滤后按 `groupBy` 分组并比较 `count`。
+8. `DUPLICATE_CHECK` 仍作为旧版重复组合检查兼容模板保留。
 
 ### 3.6 后续统一 DSL 方向
 
@@ -370,7 +376,13 @@ R006 金额关系不再作为孤立硬编码规则处理。后续应通过结构
 }
 ```
 
-第一阶段可以将这些 DSL 映射到当前已有模板和 `ROW_EXPRESSION`。第二阶段再新增统一执行器，让 `ROW_ASSERT`、`JOIN_ASSERT`、`AGGREGATE_ASSERT`、`DUPLICATE_ASSERT` 成为一等模板，逐步替代分散模板。
+当前统一 DSL 落地分为三个层次：
+
+1. 已一等化：`RELATION_EXISTS`、`JOIN_ASSERT`、`AGGREGATE_ASSERT`、`DUPLICATE_ASSERT`。
+2. 当前执行形态：`ROW_EXPRESSION` 承担 `ROW_ASSERT`。
+3. 兼容入口：`FIELD_EQUALS`、`AGGREGATION_EQUALS`、`DUPLICATE_CHECK`。
+
+后续不应删除旧模板，而应先让推荐器和默认绑定优先输出一等 DSL；旧模板继续作为兼容入口，待规则资产和测试覆盖稳定后再逐步降级为内部兼容适配。
 
 ## 4. AI 推荐范围扩展
 
@@ -387,8 +399,10 @@ ROW_EXPRESSION
 EXISTS_IN_TABLE
 RELATION_EXISTS
 FIELD_EQUALS
+JOIN_ASSERT
 AGGREGATION_EQUALS
 AGGREGATE_ASSERT
+DUPLICATE_ASSERT
 DUPLICATE_CHECK
 ```
 
@@ -400,9 +414,11 @@ DUPLICATE_CHECK
 4. `EXISTS_IN_TABLE`：`source`, `target`, `key`。
 5. `RELATION_EXISTS`：`source`, `target`, `keys`, `expectExists`，可选 `sourceWhere`, `targetWhere`, `sourceExists`。
 6. `FIELD_EQUALS`：`source`, `target`, `key`, `sourceField`, `targetField`。
-7. `AGGREGATION_EQUALS`：`source`, `target`, `groupBy`, `sum`, `targetField`, 可选 `targetKey`。
-8. `AGGREGATE_ASSERT`：`source`, `target`, `groupBy`, `aggregate`, `assert`；`assert` 支持 `targetField` 或目标侧 `aggregate`。
-9. `DUPLICATE_CHECK`：`tableName`, `groupBy`。
+7. `JOIN_ASSERT`：`source`, `target`, `keys`, `assert`，可选 `sourceWhere`, `targetWhere`。
+8. `AGGREGATION_EQUALS`：`source`, `target`, `groupBy`, `sum`, `targetField`, 可选 `targetKey`。
+9. `AGGREGATE_ASSERT`：`source`, `target`, `groupBy`, `aggregate`, `assert`；`assert` 支持 `targetField` 或目标侧 `aggregate`。
+10. `DUPLICATE_ASSERT`：`table`, `groupBy`, `assert`，可选 `where`；`assert` 支持 `{op,count}` 或 `{count:"<= 1"}`。
+11. `DUPLICATE_CHECK`：`tableName`, `groupBy`。
 
 ### 4.2 AI 与本地映射优先级
 
@@ -447,19 +463,35 @@ DUPLICATE_CHECK
    - `sourceField` 存在于 source。
    - `targetField` 存在于 target。
 
-4. `AGGREGATION_EQUALS`
+4. `JOIN_ASSERT`
+   - `source`、`target` 均存在。
+   - `keys` 或 `join` 至少包含一组 `{sourceField,targetField}`，字段必须分别存在于 source 和 target。
+   - `assert.left`、`assert.right` 支持 `sourceField`、`targetField`、字面量或 `+`、`-`、`*`、`/` 二元表达式。
+   - `assert.op` 支持 `==`、`!=`、`>`、`>=`、`<`、`<=`。
+   - 可选 `tolerance` 必须是数值。
+   - 可选 `sourceWhere`、`targetWhere` 使用行表达式谓词校验字段合法性。
+
+5. `AGGREGATION_EQUALS`
    - `source`、`target` 均存在。
    - `groupBy` 存在于 source。
    - `targetKey` 为空时默认等于 `groupBy`，并必须存在于 target。
    - `sum` 存在于 source。
    - `targetField` 存在于 target。
 
-5. `DUPLICATE_CHECK`
+6. `DUPLICATE_CHECK`
    - `tableName` 存在。
    - `groupBy` 至少包含一个字段。
    - `groupBy` 中所有字段都存在于目标表。
 
-6. `AGGREGATE_ASSERT`
+7. `DUPLICATE_ASSERT`
+   - `table` 存在。
+   - `groupBy` 至少包含一个字段。
+   - `groupBy` 中所有字段都存在于目标表。
+   - `assert.op` 支持 `==`、`!=`、`>`、`>=`、`<`、`<=`。
+   - `assert.count` 必须是数值，也可写成 `"<op> <count>"` 字符串。
+   - 可选 `where` 使用行表达式谓词校验字段合法性。
+
+8. `AGGREGATE_ASSERT`
    - `source`、`target` 均存在。
    - `groupBy` 支持单字段或 `{sourceField,targetField}` 数组，字段必须分别存在于 source 和 target。
    - `aggregate.fn` 当前支持 `SUM`、`COUNT`；`SUM` 必须提供存在于 source 的 `field`。
@@ -467,7 +499,7 @@ DUPLICATE_CHECK
    - `assert.targetField` 或 `assert.aggregate` 必须提供一个；目标字段或目标聚合字段必须存在于 target。
    - 可选 `sourceWhere`、`targetWhere` 使用行表达式谓词校验字段合法性。
 
-6. `ROW_EXPRESSION`
+9. `ROW_EXPRESSION`
    - `tableName` 存在。
    - `conditions` 至少包含一个条件。
    - `operator` 只能使用 `==`、`!=`、`>`、`>=`、`<`、`<=`。
@@ -485,8 +517,10 @@ DUPLICATE_CHECK
 | `ROW_EXPRESSION` | `左侧表达式=计算值；右侧表达式=计算值` | 失败条件文本 | `行表达式条件不成立` |
 | `AGGREGATION_EQUALS` | `目标字段=实际值；来源汇总=计算值` | `目标字段 == 来源表.sumField 汇总值` | `聚合结果不一致` |
 | `AGGREGATE_ASSERT` | `目标字段或目标汇总=实际值；来源汇总=计算值` | `目标字段/目标汇总 op 来源汇总值` | `聚合结果不一致` |
+| `JOIN_ASSERT` | `source 表达式=实际值；target 表达式=期望值` | `source 表达式 op target 表达式` | `关联断言不成立` |
 | `FIELD_EQUALS` | `source.sourceField=实际值；target.targetField=期望值` | `sourceField == target.targetField` | `关联字段值不一致` |
 | `EXISTS_IN_TABLE` | `source.key=实际值` | `target.key 中存在对应记录` | `关联记录不存在` |
+| `DUPLICATE_ASSERT` | `分组字段=分组值；count=实际次数` | `count op 期望次数` | `分组次数断言不成立` |
 | `DUPLICATE_CHECK` | `字段组合=组合值` | `唯一组合` | `存在重复记录` |
 
 优化目标是让异常详情页直接展示业务判断过程，而不是只展示单个字段值。
@@ -512,61 +546,110 @@ DUPLICATE_CHECK
 
 ### 8.0 业务数据源数据库化
 
-1. 新增 Flyway seed 脚本，创建并初始化赛题业务表。
-2. 调整 Excel 导入：不再要求业务 sheet，不再写业务行 JSON 快照。
-3. 新增 `BusinessTableDataProvider`，从数据库业务表读取并转换为 `DataTable`。
-4. `ValidationService` 通过 provider 获取业务表，规则定义和规则绑定仍从系统表读取。
-5. 新数据集的 `data_table_snapshot` 只保存业务表元数据和行数，供推荐校验和前端展示使用。
+状态：已完成演示库阶段，后续进入生产化拆分阶段。
+
+1. 已新增 Flyway seed 脚本，创建并初始化赛题业务表。
+2. 已调整 Excel 导入：不再要求业务 sheet，不再写业务行 JSON 快照。
+3. 已新增 `BusinessTableDataProvider`，从数据库业务表读取并转换为 `DataTable`。
+4. 已让 `ValidationService` 通过 provider 获取业务表，规则定义和规则绑定仍从系统表读取。
+5. 已让新数据集的 `data_table_snapshot` 保存业务表元数据和行数，供推荐校验和前端展示使用。
+6. 后续生产化时拆分系统库 DataSource 与业务库只读 DataSource，并增加业务库连接配置和只读权限校验。
 
 ### 8.1 语义映射层
 
-1. 新增本地规则语义映射器，集中处理规则文本到模板候选的推断。
-2. 将当前 R006 金额关系从 `AiAssistService` 特例迁移到 `ROW_EXPRESSION` 结构化映射。
-3. 映射结果返回模板编码、参数、置信度、匹配原因和 warning。
-4. 本地映射器作为 AI 不可用或 AI 校验失败时的兜底。
+状态：主干已完成，`JOIN_ASSERT` 与 `DUPLICATE_ASSERT` 映射已补齐，后续转向默认绑定迁移。
+
+1. 已新增本地规则语义映射器，集中处理规则文本到模板候选的推断。
+2. 已将 R006 金额关系迁移到 `ROW_EXPRESSION` 结构化映射。
+3. 已让映射结果返回模板编码、参数、置信度、匹配原因和 warning。
+4. 已让本地映射器作为 AI 不可用或 AI 校验失败时的兜底。
+5. 已将 R019、R024 等跨表字段一致规则从 `FIELD_EQUALS` 迁移到 `JOIN_ASSERT` 推荐。
+6. 已将 R029 从 `DUPLICATE_CHECK` 迁移到 `DUPLICATE_ASSERT` 推荐。
+7. 将 R030 纳入 30 条规则语义映射回归，确认指标级聚合规则能落到 `AGGREGATE_ASSERT`。
 
 ### 8.2 AI 推荐范围扩展
 
-1. 扩展 AI 推荐模板白名单到全部已执行模板。
-2. 更新 AI 推荐 prompt，明确每类模板参数结构。
-3. AI 返回结果统一转换为候选推荐，再进入模板校验。
-4. AI 返回不支持模板、缺字段、缺表、参数不可执行时降级本地推荐。
+状态：已完成当前可执行模板范围，后续随一等 DSL 新增继续扩展。
+
+1. 已扩展 AI 推荐模板白名单到全部当前可执行模板。
+2. 已更新 AI 推荐 prompt，明确每类模板参数结构。
+3. 已让 AI 返回结果统一转换为候选推荐，再进入模板校验。
+4. 已支持 AI 返回不支持模板、缺字段、缺表、参数不可执行时降级本地推荐。
+5. 已为 `JOIN_ASSERT` 同步扩展 AI 白名单、prompt、解析校验和降级测试。
+6. 已为 `DUPLICATE_ASSERT` 同步扩展 AI 白名单、prompt、解析校验和降级测试。
 
 ### 8.3 参数可执行性校验
 
-1. 抽象模板参数校验能力，供推荐接口和绑定接口复用。
-2. 保留绑定接口的强校验，确保不可执行参数不能保存。
-3. 推荐接口使用同一校验逻辑判断 AI 候选是否可应用。
-4. 失败 warning 尽量说明具体原因，例如“字段不存在: 商品ID”或“表达式格式不支持”。
+状态：已完成共享校验主干，`DUPLICATE_ASSERT` 已纳入可执行参数校验。
+
+1. 已抽象模板参数校验能力，供推荐接口和绑定接口复用。
+2. 已保留绑定接口的强校验，确保不可执行参数不能保存。
+3. 已让推荐接口使用同一校验逻辑判断 AI 候选是否可应用。
+4. 失败 warning 已尽量说明具体原因，例如“字段不存在: 商品ID”或“表达式格式不支持”。
+5. 已补充 `JOIN_ASSERT` 的 join key、source/target 过滤、断言表达式字段归属校验。
+6. 已补充 `DUPLICATE_ASSERT` 的 `count` 比较、分组字段、过滤条件和阈值合法性校验。
 
 ### 8.4 异常详情展示优化
 
-1. 为跨表、聚合和重复检查模板补充更清晰的异常详情。
-2. 保持前端字段名不变，避免 API 兼容性影响。
-3. 每类模板补充对应单测，锁定展示口径。
+状态：已完成现有模板主干，`JOIN_ASSERT` 和 `DUPLICATE_ASSERT` 已按统一 DSL 口径补齐异常详情。
+
+1. 已为跨表、聚合和重复检查模板补充更清晰的异常详情。
+2. 已保持前端字段名不变，避免 API 兼容性影响。
+3. 已为现有模板补充对应单测，锁定展示口径。
+4. 已补充 `JOIN_ASSERT` 的 join key、左右表达式、关联记录缺失等异常详情。
+5. 已补充 `DUPLICATE_ASSERT` 的分组 key、实际次数、期望次数比较等异常详情。
 
 ### 8.5 前端预览增强
 
-1. 推荐结果按模板参数结构展示。
-2. 当前绑定和推荐绑定并排或分组展示。
-3. warning 和来源信息保持可见。
-4. 应用推荐流程保持人工确认，不自动保存。
+状态：已完成基础对比展示，后续优化复杂参数可读性。
+
+1. 已按模板参数结构展示推荐结果。
+2. 已展示当前绑定和推荐绑定对比。
+3. 已保持 warning 和来源信息可见。
+4. 已保持应用推荐流程人工确认，不自动保存。
+5. 下一阶段可对 `conditions`、`keys`、`aggregate`、`assert` 等复杂参数做结构化折叠展示，避免只显示 JSON 字符串。
+
+### 8.6 统一 DSL 二阶段一等化
+
+状态：进行中。
+
+1. 已完成 `AGGREGATE_ASSERT` 一等执行形态，支持来源聚合与目标字段或目标聚合比较。
+2. 已完成 `JOIN_ASSERT` 一等模板：
+   - 参数：`source`、`target`、`keys`、可选 `sourceWhere`、`targetWhere`、`assert`。
+   - 能力：join 后比较左右字段或表达式，支持容差。
+   - 迁移：R019、R024 已优先从 `FIELD_EQUALS` 迁移；R026、R028 继续由 `RELATION_EXISTS` 承担反存在语义，后续可评估是否补充 `JOIN_ASSERT expect=false`。
+3. 已完成 `DUPLICATE_ASSERT` 一等模板：
+   - 参数：`table`、`groupBy`、可选 `where`、`assert`。
+   - 能力：支持 `count == N`、`count <= N`、`count >= N`、唯一组合和至少一次等分组次数断言。
+   - 迁移：R029 已从 `DUPLICATE_CHECK` 迁移到 `DUPLICATE_ASSERT` 推荐。
+4. 推荐器已优先输出一等 DSL，旧模板继续保留为兼容执行入口。
+
+### 8.7 默认绑定迁移
+
+状态：待开始。
+
+1. 将 R017、R020、R030 的默认模板绑定从 `AGGREGATION_EQUALS` 迁移到 `AGGREGATE_ASSERT`。
+2. 为 R017、R020、R030 补充默认 `aggregate`、`groupBy`、`assert` 参数。
+3. 将 R019、R024 的默认模板绑定从 `FIELD_EQUALS` 迁移到 `JOIN_ASSERT`。
+4. 将 R029 的默认模板绑定从 `DUPLICATE_CHECK` 迁移到 `DUPLICATE_ASSERT`。
+5. 保留旧模板执行器，确保历史数据集和已有绑定不受影响。
 
 ## 9. 测试计划
 
 ### 9.1 后端单测
 
-1. 语义映射器覆盖字段非空、非负、数值类型、行表达式、跨表存在、跨表字段一致、聚合一致、重复检查。
+1. 语义映射器覆盖字段非空、非负、数值类型、行表达式、跨表存在、跨表字段一致、聚合断言、重复检查。
 2. R006 通过通用金额关系映射生成完整 `ROW_EXPRESSION`。
 3. R015 通过通用条件分支行表达式生成完整 `ROW_EXPRESSION`。
-4. 后续新增 30 条规则映射回归测试，确认每条规则都能落到 `FIELD_CHECK`、`ROW_ASSERT`、`RELATION_EXISTS`、`JOIN_ASSERT`、`AGGREGATE_ASSERT` 或 `DUPLICATE_ASSERT`。
+4. 补齐 30 条规则映射回归测试，确认每条规则都能落到 `FIELD_CHECK`、`ROW_ASSERT`、`RELATION_EXISTS`、`JOIN_ASSERT`、`AGGREGATE_ASSERT` 或 `DUPLICATE_ASSERT`；其中 R030 必须覆盖指标级跨表聚合比较。
 5. H2 seed 表能通过 `BusinessTableDataProvider` 读取为 `DataTable`，主键、表头、行数和字段值与业务表一致。
 6. Excel 缺少业务 sheet 时仍可导入规则资产，且新导入数据集不写业务行 JSON 快照。
-7. AI 返回合法 `ROW_EXPRESSION`、`EXISTS_IN_TABLE`、`FIELD_EQUALS`、`AGGREGATION_EQUALS`、`AGGREGATE_ASSERT`、`DUPLICATE_CHECK` 推荐时，返回 `generatedByAi=true`。
+7. AI 返回合法 `ROW_EXPRESSION`、`EXISTS_IN_TABLE`、`FIELD_EQUALS`、`JOIN_ASSERT`、`AGGREGATION_EQUALS`、`AGGREGATE_ASSERT`、`DUPLICATE_ASSERT`、`DUPLICATE_CHECK` 推荐时，返回 `generatedByAi=true`。
 8. AI 返回不存在表名、字段名、key、非法 AST 或不可执行表达式时，降级本地推荐并带 warning。
-9. 绑定接口拒绝不可执行模板参数，并接受合法 `ROW_EXPRESSION`。
+9. 绑定接口拒绝不可执行模板参数，并接受合法 `ROW_EXPRESSION`、`RELATION_EXISTS`、`JOIN_ASSERT`、`AGGREGATE_ASSERT`、`DUPLICATE_ASSERT`。
 10. 各模板异常详情展示符合新口径。
 11. `FIELD_EXPRESSION` 和 `ROW_EXPRESSION` 多条件只返回第一条失败条件。
+12. 默认绑定迁移后，新增导入回归测试，确认 R017、R020、R030 默认使用 `AGGREGATE_ASSERT` 且历史 `AGGREGATION_EQUALS` 仍可执行。
 
 ### 9.2 前端验证
 
