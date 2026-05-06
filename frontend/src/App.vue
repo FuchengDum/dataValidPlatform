@@ -47,117 +47,216 @@
       </article>
     </section>
 
-    <section class="workspace">
-      <aside class="side-panel">
-        <h2>筛选</h2>
-        <label>
-          严重等级
-          <select v-model="filters.severity" @change="loadFindings">
-            <option value="">全部</option>
-            <option value="CRITICAL">严重</option>
-            <option value="WARNING">警告</option>
-          </select>
-        </label>
-        <label>
-          业务表
-          <select v-model="filters.tableName" @change="loadFindings">
-            <option value="">全部</option>
-            <option value="t_order">t_order</option>
-            <option value="t_order_item">t_order_item</option>
-            <option value="t_product">t_product</option>
-            <option value="t_payment">t_payment</option>
-            <option value="t_inventory_log">t_inventory_log</option>
-          </select>
-        </label>
-        <label>
-          规则编号
-          <input v-model.trim="filters.ruleId" placeholder="例如 R006" @keyup.enter="loadFindings" />
-        </label>
-        <button :disabled="!job" @click="loadFindings">刷新列表</button>
+    <section class="template-workbench">
+      <div class="section-head">
+        <div>
+          <h2>规则模板化工作台</h2>
+          <p>模板覆盖 {{ templateCoverageStats.templateBound }} / {{ templateCoverageStats.total }} · 已推荐 {{ recommendationStats.total }} · 模型 {{ recommendationStats.ai }} · 本地 {{ recommendationStats.local }}</p>
+        </div>
+        <div class="section-actions">
+          <button
+            :disabled="!selectedRule || recommendationLoading || loading"
+            @click="loadRuleRecommendation(selectedRule)">
+            推荐当前规则
+          </button>
+          <button
+            class="secondary-button"
+            :disabled="filteredRules.length === 0 || recommendationLoading || loading"
+            @click="loadVisibleRuleRecommendations">
+            批量推荐可见规则
+          </button>
+        </div>
+      </div>
 
-        <h2>规则覆盖</h2>
-        <div class="rule-list">
-          <div v-for="rule in rules" :key="rule.ruleId" class="rule-item">
-            <div class="rule-main">
-              <strong>{{ rule.ruleId }}</strong>
-              <span>{{ rule.ruleName }}</span>
-            </div>
-            <div class="rule-binding">
-              <span :class="['tag', rule.executorType === 'TEMPLATE' ? 'template' : 'builtin']">
-                {{ labelExecutor(rule.executorType) }}
-              </span>
-              <span v-if="rule.templateCode" class="template-code">{{ rule.templateCode }}</span>
-            </div>
-            <p v-if="rule.templateParamSummary" class="param-summary">{{ rule.templateParamSummary }}</p>
-            <div class="rule-actions">
-              <button
-                class="mini-button"
-                :disabled="!rule.templateCode || loading"
-                @click="switchRuleBinding(rule)">
-                {{ rule.executorType === 'TEMPLATE' ? '切回内置' : '切到模板' }}
-              </button>
-              <button
-                class="mini-button"
-                :disabled="!dataset || loading"
-                @click="loadRuleRecommendation(rule)">
-                AI 推荐
-              </button>
-            </div>
-            <section v-if="recommendations[rule.ruleId]" class="recommendation-box">
+      <div class="rule-filter-bar">
+        <label>
+          规则检索
+          <input v-model.trim="ruleFilters.keyword" placeholder="R006 / 金额 / 商品" />
+        </label>
+        <label>
+          执行形态
+          <select v-model="ruleFilters.executorType">
+            <option value="">全部</option>
+            <option value="TEMPLATE">模板</option>
+            <option value="BUILTIN">内置</option>
+          </select>
+        </label>
+        <label>
+          推荐状态
+          <select v-model="ruleFilters.recommendationStatus">
+            <option value="">全部</option>
+            <option value="recommended">已推荐</option>
+            <option value="ai">模型生成</option>
+            <option value="local">本地推荐</option>
+            <option value="failed">推荐失败</option>
+            <option value="notRecommended">未推荐</option>
+          </select>
+        </label>
+        <div v-if="recommendationBatchProgress.total" class="batch-progress">
+          {{ recommendationBatchProgress.done }} / {{ recommendationBatchProgress.total }}
+        </div>
+      </div>
+
+      <div class="template-workbench-grid">
+        <aside class="rule-selector-panel">
+          <div class="panel-head compact">
+            <h3>规则选择</h3>
+            <span>{{ filteredRules.length }} 条</span>
+          </div>
+          <div class="rule-list prominent">
+            <button
+              v-for="rule in filteredRules"
+              :key="rule.ruleId"
+              :class="['rule-item selectable', selectedRule?.ruleId === rule.ruleId ? 'active' : '']"
+              @click="selectRule(rule.ruleId)">
+              <div class="rule-main">
+                <strong>{{ rule.ruleId }}</strong>
+                <span>{{ rule.ruleName }}</span>
+              </div>
               <div class="rule-binding">
-                <span class="tag template">{{ recommendations[rule.ruleId].templateCode }}</span>
-                <span class="template-code">
-                  {{ recommendations[rule.ruleId].source }} · {{ recommendations[rule.ruleId].generatedByAi ? '模型生成' : '本地推荐' }}
+                <span :class="['tag', rule.executorType === 'TEMPLATE' ? 'template' : 'builtin']">
+                  {{ labelExecutor(rule.executorType) }}
                 </span>
+                <span v-if="rule.templateCode" class="template-code">{{ rule.templateCode }}</span>
               </div>
-              <p class="param-summary">{{ summarizeParams(recommendations[rule.ruleId].templateParams) }}</p>
-              <p class="recommendation-text">{{ recommendations[rule.ruleId].explanation }}</p>
-              <div class="recommendation-compare">
-                <div class="binding-preview">
-                  <strong>当前绑定</strong>
-                  <span>{{ labelExecutor(rule.executorType) }} · {{ rule.templateCode || '内置执行器' }}</span>
+              <span :class="['recommendation-state', recommendationClass(rule)]">
+                {{ labelRecommendationStatus(rule) }}
+              </span>
+            </button>
+            <p v-if="filteredRules.length === 0" class="empty">暂无匹配规则</p>
+          </div>
+        </aside>
+
+        <section class="binding-panel">
+          <div class="panel-head compact">
+            <h3>{{ selectedRule ? `${selectedRule.ruleId} ${selectedRule.ruleName}` : '绑定对比' }}</h3>
+            <div v-if="selectedRule" class="rule-actions">
+              <button
+                class="mini-button wide"
+                :disabled="!selectedRule.templateCode || loading"
+                @click="switchRuleBinding(selectedRule)">
+                {{ selectedRule.executorType === 'TEMPLATE' ? '切回内置' : '切到模板' }}
+              </button>
+              <button
+                class="mini-button wide"
+                :disabled="!selectedRecommendation || loading"
+                @click="applyRuleRecommendation(selectedRule)">
+                应用推荐
+              </button>
+            </div>
+          </div>
+          <template v-if="selectedRule">
+            <p v-if="recommendationErrors[selectedRule.ruleId]" class="assist-warning strong">
+              {{ recommendationErrors[selectedRule.ruleId] }}
+            </p>
+            <div class="recommendation-compare featured">
+              <div class="binding-preview">
+                <strong>当前绑定</strong>
+                <span>{{ labelExecutor(selectedRule.executorType) }} · {{ selectedRule.templateCode || '内置执行器' }}</span>
+                <div
+                  v-for="item in paramEntries(selectedRule.templateParams)"
+                  :key="`current-${selectedRule.ruleId}-${item.key}`"
+                  class="param-row">
+                  <b>{{ item.key }}</b>
+                  <span>{{ item.value }}</span>
+                </div>
+                <p v-if="paramEntries(selectedRule.templateParams).length === 0" class="param-empty">无模板参数</p>
+              </div>
+              <div class="binding-preview recommended">
+                <strong>AI 推荐绑定</strong>
+                <span v-if="selectedRecommendation">
+                  TEMPLATE · {{ selectedRecommendation.templateCode }} · {{ selectedRecommendation.generatedByAi ? '模型生成' : '本地推荐' }}
+                </span>
+                <span v-else>等待推荐结果</span>
+                <template v-if="selectedRecommendation">
                   <div
-                    v-for="item in paramEntries(rule.templateParams)"
-                    :key="`current-${rule.ruleId}-${item.key}`"
+                    v-for="item in paramEntries(selectedRecommendation.templateParams)"
+                    :key="`recommended-${selectedRule.ruleId}-${item.key}`"
                     class="param-row">
                     <b>{{ item.key }}</b>
                     <span>{{ item.value }}</span>
                   </div>
-                  <p v-if="paramEntries(rule.templateParams).length === 0" class="param-empty">无模板参数</p>
-                </div>
-                <div class="binding-preview">
-                  <strong>推荐绑定</strong>
-                  <span>TEMPLATE · {{ recommendations[rule.ruleId].templateCode }}</span>
-                  <div
-                    v-for="item in paramEntries(recommendations[rule.ruleId].templateParams)"
-                    :key="`recommended-${rule.ruleId}-${item.key}`"
-                    class="param-row">
-                    <b>{{ item.key }}</b>
-                    <span>{{ item.value }}</span>
-                  </div>
-                </div>
+                </template>
+                <p v-else class="param-empty">点击推荐当前规则生成模板参数</p>
               </div>
+            </div>
+            <section v-if="selectedRecommendation" class="recommendation-box prominent">
+              <div class="rule-binding">
+                <span class="tag template">{{ selectedRecommendation.templateCode }}</span>
+                <span class="template-code">{{ selectedRecommendation.source }} · {{ selectedRecommendation.generatedByAi ? '模型生成' : '本地推荐' }}</span>
+              </div>
+              <p class="param-summary">{{ summarizeParams(selectedRecommendation.templateParams) }}</p>
+              <p class="recommendation-text">{{ selectedRecommendation.explanation }}</p>
               <p
-                v-for="warning in recommendations[rule.ruleId].warnings"
+                v-for="warning in selectedRecommendation.warnings"
                 :key="warning"
                 class="assist-warning">
                 {{ warning }}
               </p>
-              <button
-                class="mini-button wide"
-                :disabled="loading"
-                @click="applyRuleRecommendation(rule)">
-                应用推荐
-              </button>
             </section>
-          </div>
-        </div>
-      </aside>
+          </template>
+          <p v-else class="empty">上传 Excel 后选择规则</p>
+        </section>
 
+        <aside class="template-capability-panel">
+          <div class="panel-head compact">
+            <h3>模板能力矩阵</h3>
+            <span>{{ templateCoverageStats.templateReady }} 个可模板化</span>
+          </div>
+          <div class="capability-list">
+            <div v-for="item in templateCoverageStats.byTemplate" :key="item.code" class="capability-item">
+              <div>
+                <strong>{{ item.code }}</strong>
+                <span>{{ item.count }} 条规则</span>
+              </div>
+              <div class="coverage-bar">
+                <span :style="{ width: item.percent + '%' }"></span>
+              </div>
+            </div>
+          </div>
+          <dl class="compact-dl">
+            <dt>模板执行</dt>
+            <dd>{{ templateCoverageStats.templateBound }} 条</dd>
+            <dt>内置执行</dt>
+            <dd>{{ templateCoverageStats.builtinBound }} 条</dd>
+            <dt>推荐失败</dt>
+            <dd>{{ recommendationStats.failed }} 条</dd>
+          </dl>
+        </aside>
+      </div>
+    </section>
+
+    <section class="workspace">
       <section class="table-panel">
         <div class="panel-head">
           <h2>异常疑点清单</h2>
           <span>{{ findings.length }} 条</span>
+        </div>
+        <div class="finding-filter-bar">
+          <label>
+            严重等级
+            <select v-model="filters.severity" @change="loadFindings">
+              <option value="">全部</option>
+              <option value="CRITICAL">严重</option>
+              <option value="WARNING">警告</option>
+            </select>
+          </label>
+          <label>
+            业务表
+            <select v-model="filters.tableName" @change="loadFindings">
+              <option value="">全部</option>
+              <option value="t_order">t_order</option>
+              <option value="t_order_item">t_order_item</option>
+              <option value="t_product">t_product</option>
+              <option value="t_payment">t_payment</option>
+              <option value="t_inventory_log">t_inventory_log</option>
+            </select>
+          </label>
+          <label>
+            规则编号
+            <input v-model.trim="filters.ruleId" placeholder="例如 R006" @keyup.enter="loadFindings" />
+          </label>
+          <button class="secondary-button" :disabled="!job" @click="loadFindings">刷新列表</button>
         </div>
         <div class="table-wrap">
           <table>
@@ -244,7 +343,7 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import {
   analyzeFinding,
   createReport,
@@ -269,13 +368,104 @@ const detail = ref(null)
 const aiAnalysis = ref(null)
 const sqlDraft = ref(null)
 const recommendations = reactive({})
+const recommendationErrors = reactive({})
+const selectedRuleId = ref('')
 const message = ref('')
 const error = ref('')
 const loading = ref(false)
+const recommendationLoading = ref(false)
 const filters = reactive({
   severity: '',
   tableName: '',
   ruleId: ''
+})
+const ruleFilters = reactive({
+  keyword: '',
+  executorType: '',
+  recommendationStatus: ''
+})
+const recommendationBatchProgress = reactive({
+  done: 0,
+  total: 0
+})
+const templateCodes = [
+  'ROW_EXPRESSION',
+  'RELATION_EXISTS',
+  'JOIN_ASSERT',
+  'AGGREGATE_ASSERT',
+  'DUPLICATE_ASSERT'
+]
+
+const filteredRules = computed(() => {
+  const keyword = ruleFilters.keyword.toLowerCase()
+  return rules.value.filter((rule) => {
+    const text = `${rule.ruleId} ${rule.ruleName} ${rule.templateCode || ''}`.toLowerCase()
+    if (keyword && !text.includes(keyword)) return false
+    if (ruleFilters.executorType && rule.executorType !== ruleFilters.executorType) return false
+    return matchRecommendationStatus(rule)
+  })
+})
+
+const selectedRule = computed(() => {
+  return filteredRules.value.find((rule) => rule.ruleId === selectedRuleId.value) || filteredRules.value[0] || null
+})
+
+const selectedRecommendation = computed(() => {
+  if (!selectedRule.value) return null
+  return recommendations[selectedRule.value.ruleId] || null
+})
+
+const recommendationStats = computed(() => {
+  return rules.value.reduce((stats, rule) => {
+    const recommendation = recommendations[rule.ruleId]
+    if (recommendation) {
+      stats.total += 1
+      if (recommendation.generatedByAi) {
+        stats.ai += 1
+      } else {
+        stats.local += 1
+      }
+    }
+    if (recommendationErrors[rule.ruleId]) {
+      stats.failed += 1
+    }
+    return stats
+  }, { total: 0, ai: 0, local: 0, failed: 0 })
+})
+
+const templateCoverageStats = computed(() => {
+  const total = rules.value.length
+  const byTemplate = templateCodes.map((code) => {
+    const count = rules.value.filter((rule) => rule.templateCode === code).length
+    return {
+      code,
+      count,
+      percent: total ? Math.round((count / total) * 100) : 0
+    }
+  })
+  return {
+    total,
+    templateReady: rules.value.filter((rule) => rule.templateCode).length,
+    templateBound: rules.value.filter((rule) => rule.executorType === 'TEMPLATE').length,
+    builtinBound: rules.value.filter((rule) => rule.executorType !== 'TEMPLATE').length,
+    byTemplate
+  }
+})
+
+watch(rules, (nextRules) => {
+  if (!nextRules.length) {
+    selectedRuleId.value = ''
+    return
+  }
+  if (!nextRules.some((rule) => rule.ruleId === selectedRuleId.value)) {
+    selectedRuleId.value = nextRules[0].ruleId
+  }
+})
+
+watch(filteredRules, (nextRules) => {
+  if (nextRules.length && !nextRules.some((rule) => rule.ruleId === selectedRuleId.value)) {
+    selectedRuleId.value = nextRules[0].ruleId
+  }
 })
 
 async function run(action, successMessage) {
@@ -306,6 +496,7 @@ async function onFileChange(event) {
     detail.value = null
     clearRecommendations()
     rules.value = await fetchRules(result.datasetId)
+    selectedRuleId.value = rules.value[0]?.ruleId || ''
   }
 }
 
@@ -352,14 +543,49 @@ async function switchRuleBinding(rule) {
   }), nextExecutorType === 'TEMPLATE' ? '已切换为模板执行' : '已切换为内置执行')
   if (result) {
     rules.value = await fetchRules(dataset.value.datasetId)
+    selectedRuleId.value = rule.ruleId
   }
 }
 
 async function loadRuleRecommendation(rule) {
-  if (!dataset.value) return
-  const result = await run(() => recommendRuleBinding(dataset.value.datasetId, rule.ruleId), '规则模板推荐已生成')
-  if (result) {
-    recommendations[rule.ruleId] = result
+  if (!dataset.value || !rule) return
+  selectedRuleId.value = rule.ruleId
+  recommendationLoading.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    await recommendOneRule(rule)
+    message.value = '规则模板推荐已生成'
+  } catch (err) {
+    error.value = err.message || '规则模板推荐失败'
+  } finally {
+    recommendationLoading.value = false
+  }
+}
+
+async function loadVisibleRuleRecommendations() {
+  if (!dataset.value || filteredRules.value.length === 0) return
+  const targetRules = [...filteredRules.value]
+  let successCount = 0
+  recommendationLoading.value = true
+  recommendationBatchProgress.done = 0
+  recommendationBatchProgress.total = targetRules.length
+  error.value = ''
+  message.value = ''
+  try {
+    for (const rule of targetRules) {
+      try {
+        await recommendOneRule(rule)
+        successCount += 1
+      } catch (_) {
+        // 失败信息已记录到对应规则，批量流程继续推进。
+      } finally {
+        recommendationBatchProgress.done += 1
+      }
+    }
+    message.value = `批量推荐完成：成功 ${successCount} 条，失败 ${targetRules.length - successCount} 条`
+  } finally {
+    recommendationLoading.value = false
   }
 }
 
@@ -373,8 +599,27 @@ async function applyRuleRecommendation(rule) {
   }), '已应用规则模板推荐')
   if (result) {
     delete recommendations[rule.ruleId]
+    delete recommendationErrors[rule.ruleId]
     rules.value = await fetchRules(dataset.value.datasetId)
+    selectedRuleId.value = rule.ruleId
   }
+}
+
+async function recommendOneRule(rule) {
+  try {
+    const result = await recommendRuleBinding(dataset.value.datasetId, rule.ruleId)
+    recommendations[rule.ruleId] = result
+    delete recommendationErrors[rule.ruleId]
+    return result
+  } catch (err) {
+    const messageText = err.message || '规则模板推荐失败'
+    recommendationErrors[rule.ruleId] = messageText
+    throw new Error(`${rule.ruleId}: ${messageText}`)
+  }
+}
+
+function selectRule(ruleId) {
+  selectedRuleId.value = ruleId
 }
 
 async function loadAiAnalysis() {
@@ -417,6 +662,39 @@ function labelExecutor(executorType) {
   return executorType === 'TEMPLATE' ? '模板' : '内置'
 }
 
+function labelRecommendationStatus(rule) {
+  if (recommendationErrors[rule.ruleId]) return '推荐失败'
+  const recommendation = recommendations[rule.ruleId]
+  if (!recommendation) return '未推荐'
+  return recommendation.generatedByAi ? '模型生成' : '本地推荐'
+}
+
+function recommendationClass(rule) {
+  if (recommendationErrors[rule.ruleId]) return 'failed'
+  const recommendation = recommendations[rule.ruleId]
+  if (!recommendation) return 'idle'
+  return recommendation.generatedByAi ? 'ai' : 'local'
+}
+
+function matchRecommendationStatus(rule) {
+  const recommendation = recommendations[rule.ruleId]
+  const hasError = Boolean(recommendationErrors[rule.ruleId])
+  switch (ruleFilters.recommendationStatus) {
+    case 'recommended':
+      return Boolean(recommendation)
+    case 'ai':
+      return Boolean(recommendation?.generatedByAi)
+    case 'local':
+      return Boolean(recommendation && !recommendation.generatedByAi)
+    case 'failed':
+      return hasError
+    case 'notRecommended':
+      return !recommendation && !hasError
+    default:
+      return true
+  }
+}
+
 function labelDraftType(draftType) {
   return draftType === 'MANUAL_REVIEW' ? '人工核查 SQL 草案' : '只读校验 SQL 草案'
 }
@@ -446,5 +724,8 @@ function stringifyParam(value) {
 
 function clearRecommendations() {
   Object.keys(recommendations).forEach((key) => delete recommendations[key])
+  Object.keys(recommendationErrors).forEach((key) => delete recommendationErrors[key])
+  recommendationBatchProgress.done = 0
+  recommendationBatchProgress.total = 0
 }
 </script>

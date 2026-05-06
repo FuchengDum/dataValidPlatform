@@ -24,11 +24,11 @@
 
 当前主要不足：
 
-1. 统一 DSL 的主要执行形态已落地，后续重点从新增执行器转向默认绑定迁移和兼容模板收敛。
-2. `FIELD_EQUALS`、`AGGREGATION_EQUALS`、`DUPLICATE_CHECK` 仍作为兼容模板存在，后续需要逐步迁移到更通用的 `JOIN_ASSERT`、`AGGREGATE_ASSERT`、`DUPLICATE_ASSERT`。
-3. R017、R020、R030 的语义推荐已可落到 `AGGREGATE_ASSERT`，但默认导入绑定仍存在旧模板兼容路径，需要补齐迁移策略。
+1. 统一 DSL 的主要执行形态已落地，默认导入绑定已优先使用一等模板。
+2. `FIELD_EQUALS`、`AGGREGATION_EQUALS`、`DUPLICATE_CHECK` 仍作为兼容模板存在，后续需要逐步降级为历史兼容入口。
+3. R017、R020、R030 的语义推荐和默认导入绑定已可落到 `AGGREGATE_ASSERT`。
 4. R030 的跨表指标级聚合能力已在执行器层验证，但还需要进入 30 条规则语义映射回归清单。
-5. R029 的语义推荐已可落到 `DUPLICATE_ASSERT`，但默认导入绑定仍需从 `DUPLICATE_CHECK` 迁移。
+5. R019、R024 默认导入绑定已迁移到 `JOIN_ASSERT`，R029 默认导入绑定已迁移到 `DUPLICATE_ASSERT`。
 6. 生产化业务库仍需要从演示 H2 形态进一步拆分为系统库和业务只读库。
 
 ## 2. 拓展目标
@@ -626,12 +626,12 @@ DUPLICATE_CHECK
 
 ### 8.7 默认绑定迁移
 
-状态：待开始。
+状态：已完成。
 
-1. 将 R017、R020、R030 的默认模板绑定从 `AGGREGATION_EQUALS` 迁移到 `AGGREGATE_ASSERT`。
-2. 为 R017、R020、R030 补充默认 `aggregate`、`groupBy`、`assert` 参数。
-3. 将 R019、R024 的默认模板绑定从 `FIELD_EQUALS` 迁移到 `JOIN_ASSERT`。
-4. 将 R029 的默认模板绑定从 `DUPLICATE_CHECK` 迁移到 `DUPLICATE_ASSERT`。
+1. 已将 R017、R020、R030 的默认模板绑定从 `AGGREGATION_EQUALS` 迁移到 `AGGREGATE_ASSERT`。
+2. 已为 R017、R020、R030 补充默认 `aggregate`、`groupBy`、`assert` 参数；其中 R020 默认带 `sourceWhere 支付状态 == 支付成功`，与内置规则口径一致。
+3. 已将 R019、R024 的默认模板绑定从 `FIELD_EQUALS` 迁移到 `JOIN_ASSERT`。
+4. 已将 R029 的默认模板绑定从 `DUPLICATE_CHECK` 迁移到 `DUPLICATE_ASSERT`。
 5. 保留旧模板执行器，确保历史数据集和已有绑定不受影响。
 
 ## 9. 测试计划
@@ -649,7 +649,7 @@ DUPLICATE_CHECK
 9. 绑定接口拒绝不可执行模板参数，并接受合法 `ROW_EXPRESSION`、`RELATION_EXISTS`、`JOIN_ASSERT`、`AGGREGATE_ASSERT`、`DUPLICATE_ASSERT`。
 10. 各模板异常详情展示符合新口径。
 11. `FIELD_EXPRESSION` 和 `ROW_EXPRESSION` 多条件只返回第一条失败条件。
-12. 默认绑定迁移后，新增导入回归测试，确认 R017、R020、R030 默认使用 `AGGREGATE_ASSERT` 且历史 `AGGREGATION_EQUALS` 仍可执行。
+12. 已新增导入回归测试，确认 R017、R020、R030 默认使用 `AGGREGATE_ASSERT`，R019、R024 默认使用 `JOIN_ASSERT`，R029 默认使用 `DUPLICATE_ASSERT`，且默认参数可通过共享模板校验。
 
 ### 9.2 前端验证
 

@@ -311,6 +311,23 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingNormalizesAbsFieldExpressionModelRecommendationForR006() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order\","
+                + "\"expression\":\"ABS(实付金额 - (订单金额 - 优惠金额)) <= 0.01 && 实付金额 <= 订单金额\"},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型推荐金额关系表达式\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R006"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
     void recommendRuleBindingFallsBackWhenR006ModelExpressionMissesRequiredCondition() {
         AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
                 + "\"templateParams\":{\"tableName\":\"t_order\","

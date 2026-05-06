@@ -365,10 +365,116 @@ public class ExcelImportService {
                 params.put("tableName", "t_payment");
                 params.put("fields", Arrays.asList("支付金额", "退款金额"));
                 break;
+            case "R017":
+            case "R030":
+                params.put("source", "t_order_item");
+                params.put("target", "t_order");
+                params.put("groupBy", Arrays.asList(relationKey("订单ID", "订单ID")));
+                params.put("aggregate", aggregate("SUM", "小计金额"));
+                params.put("assert", aggregateAssert("==", "订单金额", "0.01"));
+                break;
+            case "R019":
+                params.put("source", "t_order_item");
+                params.put("target", "t_product");
+                params.put("keys", Arrays.asList(relationKey("商品ID", "商品ID")));
+                params.put("assert", joinAssert(sourceField("单价"), "==", targetField("售价"), "0.01"));
+                break;
+            case "R020":
+                params.put("source", "t_payment");
+                params.put("target", "t_order");
+                params.put("groupBy", Arrays.asList(relationKey("订单ID", "订单ID")));
+                params.put("aggregate", aggregate("SUM", "支付金额"));
+                params.put("sourceWhere", condition(field("支付状态"), "==", literal("支付成功")));
+                params.put("assert", aggregateAssert("==", "实付金额", "0.01"));
+                break;
+            case "R024":
+                params.put("source", "t_payment");
+                params.put("target", "t_order");
+                params.put("keys", Arrays.asList(relationKey("订单ID", "订单ID")));
+                params.put("assert", joinAssert(sourceField("用户ID"), "==", targetField("用户ID"), null));
+                break;
+            case "R029":
+                params.put("table", "t_payment");
+                params.put("groupBy", Arrays.asList("订单ID"));
+                params.put("where", condition(field("支付状态"), "==", literal("支付成功")));
+                params.put("assert", duplicateAssert("<=", 1));
+                break;
             default:
                 break;
         }
         return params;
+    }
+
+    private Map<String, Object> relationKey(String sourceField, String targetField) {
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put("sourceField", sourceField);
+        key.put("targetField", targetField);
+        return key;
+    }
+
+    private Map<String, Object> aggregate(String fn, String field) {
+        Map<String, Object> aggregate = new LinkedHashMap<>();
+        aggregate.put("fn", fn);
+        aggregate.put("field", field);
+        return aggregate;
+    }
+
+    private Map<String, Object> aggregateAssert(String operator, String targetField, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("targetField", targetField);
+        assertion.put("tolerance", tolerance);
+        return assertion;
+    }
+
+    private Map<String, Object> joinAssert(Object left, String operator, Object right, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("left", left);
+        assertion.put("op", operator);
+        assertion.put("right", right);
+        if (tolerance != null) {
+            assertion.put("tolerance", tolerance);
+        }
+        return assertion;
+    }
+
+    private Map<String, Object> sourceField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("sourceField", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> targetField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("targetField", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> condition(Object left, String operator, Object right) {
+        Map<String, Object> condition = new LinkedHashMap<>();
+        condition.put("left", left);
+        condition.put("operator", operator);
+        condition.put("right", right);
+        return condition;
+    }
+
+    private Map<String, Object> field(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("field", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> literal(Object value) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("literal", value);
+        return expression;
+    }
+
+    private Map<String, Object> duplicateAssert(String operator, int count) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("count", count);
+        return assertion;
     }
 
     private RuleDefinition toRuleDefinition(RuleDefinitionEntity entity) {
@@ -427,15 +533,17 @@ public class ExcelImportService {
             case "R011":
                 return "FIELD_EXPRESSION";
             case "R017":
+            case "R020":
             case "R030":
-                return "AGGREGATION_EQUALS";
+                return "AGGREGATE_ASSERT";
             case "R018":
             case "R023":
                 return "EXISTS_IN_TABLE";
+            case "R019":
             case "R024":
-                return "FIELD_EQUALS";
+                return "JOIN_ASSERT";
             case "R029":
-                return "DUPLICATE_CHECK";
+                return "DUPLICATE_ASSERT";
             default:
                 return null;
         }

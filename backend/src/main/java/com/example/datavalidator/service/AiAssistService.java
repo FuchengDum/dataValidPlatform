@@ -402,15 +402,15 @@ public class AiAssistService {
                 || !"FIELD_EXPRESSION".equals(result.getTemplateCode())) {
             return false;
         }
-        try {
-            TemplateBindingValidator.validate(result.getTemplateCode(), result.getTemplateParams(), tableFields);
-        } catch (BadRequestException ex) {
+        String tableName = objectString(result.getTemplateParams().get("tableName"));
+        if (!tableFields.containsKey(tableName)) {
             return false;
         }
         String expression = objectString(result.getTemplateParams().get("expression"));
         String requiredExpression = String.join(" && ",
                 rowConditionTexts(localMatch.getTemplateParams().get("conditions")));
-        if (!containsAllConditions(expression, requiredExpression)) {
+        if (!containsAllConditions(expression, requiredExpression)
+                && !containsAllEquivalentConditions(expression, requiredExpression)) {
             return false;
         }
         result.setTemplateCode(localMatch.getTemplateCode());
@@ -513,12 +513,68 @@ public class AiAssistService {
 
     private List<String> normalizedConditions(String expression) {
         List<String> conditions = new ArrayList<>();
-        for (String condition : safe(expression).split("\\s+&&\\s+")) {
+        for (String condition : safe(expression).split("(?i)\\s+(?:&&|AND)\\s+")) {
             if (!isBlank(condition)) {
                 conditions.add(condition.trim().replaceAll("\\s+", " "));
             }
         }
         return conditions;
+    }
+
+    private boolean containsAllEquivalentConditions(String expression, String requiredExpression) {
+        List<String> conditions = normalizedConditions(expression);
+        for (String required : normalizedConditions(requiredExpression)) {
+            if (!conditionCovered(conditions, required)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean conditionCovered(List<String> conditions, String required) {
+        if (conditions.contains(required)) {
+            return true;
+        }
+        String operator = required.contains(" == ") ? " == " : required.contains(" = ") ? " = " : "";
+        if (isBlank(operator)) {
+            return false;
+        }
+        String[] parts = required.split(Pattern.quote(operator), 2);
+        if (parts.length != 2) {
+            return false;
+        }
+        for (String condition : conditions) {
+            if (isAbsToleranceEquality(condition, parts[0], parts[1])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isAbsToleranceEquality(String condition, String left, String right) {
+        String normalized = compact(condition);
+        if (!normalized.startsWith("ABS(") || (!normalized.contains(")<=") && !normalized.contains(")<"))) {
+            return false;
+        }
+        String leftValue = compact(left);
+        String rightValue = stripOuterParentheses(compact(right));
+        return normalized.contains("ABS(" + leftValue + "-(" + rightValue + "))")
+                || normalized.contains("ABS((" + leftValue + ")-(" + rightValue + "))")
+                || normalized.contains("ABS((" + leftValue + ")-" + rightValue + ")")
+                || normalized.contains("ABS((" + rightValue + ")-" + leftValue + ")")
+                || normalized.contains("ABS(" + rightValue + "-" + leftValue + ")");
+    }
+
+    private String compact(String value) {
+        return safe(value).replaceAll("\\s+", "");
+    }
+
+    private String stripOuterParentheses(String value) {
+        String result = value;
+        while (result.startsWith("(") && result.endsWith(")") && result.length() > 1) {
+            result = result.substring(1, result.length() - 1);
+        }
+        return result;
     }
 
     private Map<String, Object> objectMap(Object value) {
