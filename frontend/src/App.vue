@@ -51,7 +51,7 @@
       <div class="section-head">
         <div>
           <h2>规则模板化工作台</h2>
-          <p>模板覆盖 {{ templateCoverageStats.templateBound }} / {{ templateCoverageStats.total }} · 已推荐 {{ recommendationStats.total }} · 模型 {{ recommendationStats.ai }} · 本地 {{ recommendationStats.local }}</p>
+          <p>模板就绪 {{ templateCoverageStats.templateReady }} / {{ templateCoverageStats.total }} · 模板执行 {{ templateCoverageStats.templateBound }} · 已推荐 {{ recommendationStats.total }} · 模型 {{ recommendationStats.ai }} · 本地 {{ recommendationStats.local }}</p>
         </div>
         <div class="section-actions">
           <button

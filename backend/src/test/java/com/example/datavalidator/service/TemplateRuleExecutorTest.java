@@ -231,6 +231,29 @@ class TemplateRuleExecutorTest {
     }
 
     @Test
+    void rowExpressionTemplateSupportsWhenInLiteralListNode() {
+        DataTable orders = table("t_order", "订单ID",
+                row("ORD003", "订单ID", "ORD003", "订单状态", "已支付",
+                        "下单时间", "2026-04-02 09:00:00", "支付时间", "2026-04-02 09:01:00"),
+                row("ORD004", "订单ID", "ORD004", "订单状态", "已发货",
+                        "下单时间", "2026-04-03 09:00:00", "支付时间", "2026-04-03 08:59:00"));
+        RuleBinding binding = template("R025", "ROW_EXPRESSION")
+                .param("tableName", "t_order")
+                .param("conditions", Arrays.asList(
+                        when(condition(field("支付时间"), ">=", field("下单时间")),
+                                condition(field("订单状态"), "in",
+                                        literal(Arrays.asList("已支付", "已发货", "已完成"))))))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R025", "订单状态时间逻辑校验"),
+                tables(orders), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("ORD004");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("下单时间=2026-04-03 09:00:00");
+    }
+
+    @Test
     void existsInTableTemplateReportsMissingTargetKey() {
         DataTable items = table("order_item", "明细ID",
                 row("I001", "明细ID", "I001", "商品ID", "P001"),

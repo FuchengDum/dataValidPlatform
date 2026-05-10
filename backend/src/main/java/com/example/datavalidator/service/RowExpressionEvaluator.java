@@ -346,12 +346,21 @@ class RowExpressionEvaluator {
     }
 
     private static List<String> values(Object rawValue) {
+        if (rawValue instanceof Map) {
+            Map<String, Object> node = asMap(rawValue);
+            if (node.containsKey("literal")) {
+                return values(node.get("literal"));
+            }
+            if (node.containsKey("value")) {
+                return values(node.get("value"));
+            }
+        }
         if (!(rawValue instanceof List)) {
             return Collections.singletonList(stringValue(rawValue));
         }
         List<String> result = new ArrayList<>();
         for (Object item : (List<?>) rawValue) {
-            result.add(stringValue(item));
+            result.addAll(values(item));
         }
         return result;
     }

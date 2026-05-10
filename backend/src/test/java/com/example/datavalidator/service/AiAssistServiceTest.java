@@ -448,6 +448,29 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingFallsBackWhenRelationExistsModelOmitsRequiredPredicatesForR021() {
+        AiAssistService service = multiTableRecommendationService("R021", "订单-支付状态一致性",
+                "已支付/已发货/已完成订单必须有支付成功记录；已取消订单不应有支付成功记录(除非全额退款)",
+                "SELECT o.* FROM t_order o WHERE o.订单状态 IN ('已支付','已发货','已完成') "
+                        + "AND NOT EXISTS(SELECT 1 FROM t_payment p WHERE p.订单ID=o.订单ID "
+                        + "AND p.支付状态='支付成功')",
+                Optional.of("{\"templateCode\":\"RELATION_EXISTS\","
+                        + "\"templateParams\":{\"source\":\"t_order\",\"target\":\"t_payment\","
+                        + "\"keys\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
+                        + "\"expectExists\":true},"
+                        + "\"confidence\":0.93,\"explanation\":\"模型推荐订单支付存在性但缺少状态过滤\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R021"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("RELATION_EXISTS");
+        assertThat(result.getWarnings().get(0)).contains("模型推荐校验失败")
+                .contains("模型关系存在模板未覆盖本地语义映射条件");
+    }
+
+    @Test
     void recommendRuleBindingNormalizesRelationExistsPredicateAndCompletesR022() {
         AiAssistService service = multiTableRecommendationService("R022", "订单-库存扣减一致性",
                 "已支付订单的每条明细应有对应的库存出库记录，出库数量应与明细数量一致",
@@ -461,6 +484,7 @@ class AiAssistServiceTest {
                         + "{\"sourceField\":\"商品ID\",\"targetField\":\"商品ID\"},"
                         + "{\"sourceField\":\"数量\",\"targetField\":\"变动数量\"}],"
                         + "\"expectExists\":true,"
+                        + "\"targetWhere\":{\"field\":\"变动类型\",\"operator\":\"==\",\"value\":\"出库\"},"
                         + "\"sourceExists\":{\"target\":\"t_order\","
                         + "\"keys\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
                         + "\"targetWhere\":{\"field\":\"订单状态\",\"operator\":\"in\","

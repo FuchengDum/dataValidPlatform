@@ -513,12 +513,12 @@ DUPLICATE_CHECK
 
 | 模板 | actualValue 建议 | expectedValue 建议 | description 建议 |
 |---|---|---|---|
-| `FIELD_EXPRESSION` | `左侧字段=实际值；右侧表达式=计算值` | 失败条件文本 | `表达式条件不成立` |
-| `ROW_EXPRESSION` | `左侧表达式=计算值；右侧表达式=计算值` | 失败条件文本 | `行表达式条件不成立` |
-| `AGGREGATION_EQUALS` | `目标字段=实际值；来源汇总=计算值` | `目标字段 == 来源表.sumField 汇总值` | `聚合结果不一致` |
-| `AGGREGATE_ASSERT` | `目标字段或目标汇总=实际值；来源汇总=计算值` | `目标字段/目标汇总 op 来源汇总值` | `聚合结果不一致` |
-| `JOIN_ASSERT` | `source 表达式=实际值；target 表达式=期望值` | `source 表达式 op target 表达式` | `关联断言不成立` |
-| `FIELD_EQUALS` | `source.sourceField=实际值；target.targetField=期望值` | `sourceField == target.targetField` | `关联字段值不一致` |
+| `FIELD_EXPRESSION` | `左侧字段=实际值` | `右侧表达式=计算值` | `表达式条件不成立` |
+| `ROW_EXPRESSION` | `左侧表达式=计算值` | `右侧表达式=计算值` | `行表达式条件不成立` |
+| `AGGREGATION_EQUALS` | `目标字段=实际值` | `来源汇总=计算值` | `聚合结果不一致` |
+| `AGGREGATE_ASSERT` | `目标字段或目标汇总=实际值` | `来源汇总=计算值` | `聚合结果不一致` |
+| `JOIN_ASSERT` | `source 表达式=实际值` | `target 表达式=期望值` | `关联断言不成立` |
+| `FIELD_EQUALS` | `source.sourceField=实际值` | `target.targetField=期望值` | `关联字段值不一致` |
 | `EXISTS_IN_TABLE` | `source.key=实际值` | `target.key 中存在对应记录` | `关联记录不存在` |
 | `DUPLICATE_ASSERT` | `分组字段=分组值；count=实际次数` | `count op 期望次数` | `分组次数断言不成立` |
 | `DUPLICATE_CHECK` | `字段组合=组合值` | `唯一组合` | `存在重复记录` |

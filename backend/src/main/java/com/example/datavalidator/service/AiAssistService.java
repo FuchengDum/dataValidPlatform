@@ -664,8 +664,8 @@ public class AiAssistService {
                 && objectString(params.get("target")).equals(objectString(localParams.get("target")))
                 && relationExpectExists(params) == relationExpectExists(localParams)
                 && containsAllRelationKeys(params.get("keys"), localParams.get("keys"))
-                && relationPredicateCompatible(params.get("sourceWhere"), localParams.get("sourceWhere"), true)
-                && relationPredicateCompatible(params.get("targetWhere"), localParams.get("targetWhere"), true)
+                && relationPredicateCompatible(params.get("sourceWhere"), localParams.get("sourceWhere"), false)
+                && relationPredicateCompatible(params.get("targetWhere"), localParams.get("targetWhere"), false)
                 && sourceExistsCompatible(params.get("sourceExists"), localParams.get("sourceExists"));
     }
 
@@ -674,8 +674,8 @@ public class AiAssistService {
                 && objectString(params.get("target")).equals(objectString(localParams.get("source")))
                 && relationExpectExists(params) == relationExpectExists(localParams)
                 && containsAllRelationKeysReversed(params.get("keys"), localParams.get("keys"))
-                && relationPredicateCompatible(params.get("sourceWhere"), localParams.get("targetWhere"), true)
-                && relationPredicateCompatible(params.get("targetWhere"), localParams.get("sourceWhere"), true)
+                && relationPredicateCompatible(params.get("sourceWhere"), localParams.get("targetWhere"), false)
+                && relationPredicateCompatible(params.get("targetWhere"), localParams.get("sourceWhere"), false)
                 && params.get("sourceExists") == null
                 && localParams.get("sourceExists") == null;
     }
