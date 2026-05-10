@@ -8,6 +8,8 @@ import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -17,9 +19,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class OpenAiCompatibleChatClient implements AiChatClient {
+    private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleChatClient.class);
+    private static final AtomicLong CALL_SEQUENCE = new AtomicLong();
+
     private final AppProperties properties;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
@@ -42,10 +48,14 @@ public class OpenAiCompatibleChatClient implements AiChatClient {
 
     @Override
     public Optional<String> complete(String systemPrompt, String userPrompt) {
+        long callId = CALL_SEQUENCE.incrementAndGet();
         AppProperties.Ai ai = properties.getAi();
         if (!ai.isEnabled() || isBlank(ai.getEndpoint()) || isBlank(ai.getModel())) {
+            log.info("AI 模型调用跳过: callId={}, enabled={}, endpointConfigured={}, modelConfigured={}",
+                    callId, ai.isEnabled(), !isBlank(ai.getEndpoint()), !isBlank(ai.getModel()));
             return Optional.empty();
         }
+        String url = chatCompletionsUrl(ai.getEndpoint());
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -59,10 +69,18 @@ public class OpenAiCompatibleChatClient implements AiChatClient {
                     message("system", systemPrompt),
                     message("user", userPrompt)
             ));
-            String response = restTemplate.postForObject(chatCompletionsUrl(ai.getEndpoint()),
+            log.info("AI 模型请求参数: callId={}, url={}, model={}, requestBody={}",
+                    callId, url, ai.getModel(), toJson(body));
+            String response = restTemplate.postForObject(url,
                     new HttpEntity<>(body, headers), String.class);
-            return extractContent(response);
+            log.info("AI 模型响应原文: callId={}, response={}", callId, response);
+            Optional<String> content = extractContent(response);
+            log.info("AI 模型响应内容: callId={}, hasContent={}, content={}",
+                    callId, content.isPresent(), content.orElse(""));
+            return content;
         } catch (Exception ex) {
+            log.warn("AI 模型调用失败: callId={}, url={}, model={}, error={}",
+                    callId, url, ai.getModel(), ex.toString(), ex);
             return Optional.empty();
         }
     }
@@ -101,6 +119,14 @@ public class OpenAiCompatibleChatClient implements AiChatClient {
             return trimmed;
         }
         return trimmed + "/v1/chat/completions";
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ex) {
+            return String.valueOf(value);
+        }
     }
 
     private boolean isBlank(String value) {

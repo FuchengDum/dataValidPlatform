@@ -78,7 +78,7 @@ class RowExpressionEvaluator {
         String operator = stringValue(condition.get("operator"));
         boolean satisfied = compare(left, operator, right, condition.get("right"));
         return new Result(satisfied, left.firstField(), conditionText(left.text, operator, right.text),
-                left.summary() + "；" + right.summary(), left.text, operator, right.text);
+                left.summary(), expectedSummary(operator, right), left.text, operator, right.text);
     }
 
     static void validatePredicate(Object rawPredicate, List<String> headers) {
@@ -87,6 +87,11 @@ class RowExpressionEvaluator {
 
     @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> conditions(Object rawConditions) {
+        if (rawConditions instanceof Map) {
+            Map<String, Object> condition = new LinkedHashMap<>();
+            ((Map<?, ?>) rawConditions).forEach((key, value) -> condition.put(String.valueOf(key), value));
+            return Collections.singletonList(condition);
+        }
         if (!(rawConditions instanceof List)) {
             return Collections.emptyList();
         }
@@ -365,6 +370,16 @@ class RowExpressionEvaluator {
         return left + " " + operator + " " + right;
     }
 
+    private static String expectedSummary(String operator, ExpressionValue right) {
+        if ("isNull".equals(operator)) {
+            return "应为空";
+        }
+        if ("isNotNull".equals(operator)) {
+            return "应非空";
+        }
+        return right.summary();
+    }
+
     private static String formatDecimal(BigDecimal value) {
         return value.stripTrailingZeros().toPlainString();
     }
@@ -404,16 +419,18 @@ class RowExpressionEvaluator {
         private final String fieldName;
         private final String failedCondition;
         private final String actualSummary;
+        private final String expectedSummary;
         private final String leftText;
         private final String operator;
         private final String rightText;
 
         Result(boolean satisfied, String fieldName, String failedCondition, String actualSummary,
-               String leftText, String operator, String rightText) {
+               String expectedSummary, String leftText, String operator, String rightText) {
             this.satisfied = satisfied;
             this.fieldName = fieldName;
             this.failedCondition = failedCondition;
             this.actualSummary = actualSummary;
+            this.expectedSummary = expectedSummary;
             this.leftText = leftText;
             this.operator = operator;
             this.rightText = rightText;
@@ -423,6 +440,7 @@ class RowExpressionEvaluator {
         String getFieldName() { return fieldName; }
         String getFailedCondition() { return failedCondition; }
         String getActualSummary() { return actualSummary; }
+        String getExpectedSummary() { return expectedSummary; }
         String getLeftText() { return leftText; }
         String getOperator() { return operator; }
         String getRightText() { return rightText; }

@@ -72,7 +72,8 @@ class RuleTemplateSemanticMapper {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("tableName", tableName);
         params.put("fields", fields);
-        return applicable(templateCode, params, "基于规则文本和字段快照推荐字段级模板。", "MEDIUM");
+        return applicable(templateCode, params, "基于规则文本和字段快照推荐字段级模板。",
+                fieldTemplateConfidence(rule, text));
     }
 
     private String resolveFieldTemplate(RuleDefinitionEntity rule, String text) {
@@ -88,6 +89,19 @@ class RuleTemplateSemanticMapper {
             return "NUMERIC_TYPE";
         }
         return "NON_NEGATIVE";
+    }
+
+    private String fieldTemplateConfidence(RuleDefinitionEntity rule, String text) {
+        if (FIELD_TEMPLATES.contains(rule.getTemplateCode())) {
+            return "HIGH";
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        if (text.contains("非空") || text.contains("不能为空") || text.contains("必填")
+                || lower.contains("not null") || text.contains("数值") || text.contains("类型")
+                || lower.contains("numeric")) {
+            return "HIGH";
+        }
+        return "MEDIUM";
     }
 
     private RuleTemplateSemanticMatch amountExpression(RuleDefinitionEntity rule,
@@ -142,11 +156,21 @@ class RuleTemplateSemanticMapper {
         for (String tableName : applicableTables(rule, tableFields)) {
             List<String> headers = tableFields.getOrDefault(tableName, Collections.emptyList());
             List<Map<String, Object>> conditions = new ArrayList<>();
+            if (addStatusTimeConditions(conditions, headers, text)) {
+                Map<String, Object> params = new LinkedHashMap<>();
+                params.put("tableName", tableName);
+                params.put("conditions", conditions);
+                return applicable("ROW_EXPRESSION", params, "基于条件行断言语义推荐结构化行表达式模板。", "HIGH");
+            }
             addRatioCondition(conditions, headers, text);
             addMultiplicationCondition(conditions, headers, text);
-            addStatusComparisonConditions(conditions, headers, text);
-            addPositiveQuantityCondition(conditions, headers, text);
-            addStatusTimeConditions(conditions, headers, text);
+            if (!addTypedPositiveQuantityCondition(conditions, headers, text)) {
+                int beforeStatusConditions = conditions.size();
+                addStatusComparisonConditions(conditions, headers, text);
+                if (conditions.size() == beforeStatusConditions) {
+                    addPositiveQuantityCondition(conditions, headers, text);
+                }
+            }
             if (!conditions.isEmpty()) {
                 Map<String, Object> params = new LinkedHashMap<>();
                 params.put("tableName", tableName);
@@ -239,17 +263,34 @@ class RuleTemplateSemanticMapper {
         conditions.add(condition(field(quantity), ">", literal(0)));
     }
 
-    private void addStatusTimeConditions(List<Map<String, Object>> conditions, List<String> headers, String text) {
+    private boolean addTypedPositiveQuantityCondition(List<Map<String, Object>> conditions,
+                                                      List<String> headers, String text) {
+        if (!containsAny(text, "正整数", "必须为正数", "数量<=0", "数量<0")
+                || !text.contains("入库") || !text.contains("出库")) {
+            return false;
+        }
+        String quantity = fieldContaining(headers, text, "数量");
+        String type = fieldContaining(headers, text, "类型");
+        if (ValueParsers.isBlank(quantity) || ValueParsers.isBlank(type)) {
+            return false;
+        }
+        conditions.add(when(condition(field(quantity), ">", literal(0)),
+                condition(field(type), "in", Arrays.asList("入库", "出库"))));
+        return true;
+    }
+
+    private boolean addStatusTimeConditions(List<Map<String, Object>> conditions, List<String> headers, String text) {
         if (!(text.contains("支付时间") && text.contains("下单时间") && text.contains("待支付"))) {
-            return;
+            return false;
         }
         if (!headers.contains("订单状态") || !headers.contains("支付时间") || !headers.contains("下单时间")) {
-            return;
+            return false;
         }
         conditions.add(when(condition(field("支付时间"), "isNull", null),
                 condition(field("订单状态"), "==", literal("待支付"))));
         conditions.add(when(condition(field("支付时间"), ">=", field("下单时间")),
                 condition(field("订单状态"), "in", Arrays.asList("已支付", "已发货", "已完成"))));
+        return true;
     }
 
     private RowRelationship rowRelationship(List<String> headers, String text) {

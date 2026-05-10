@@ -173,6 +173,8 @@ public class AiAssistService {
             RuleBindingRecommendationResult result = new RuleBindingRecommendationResult();
             result.setTemplateCode(stringValue(values, "templateCode"));
             result.setTemplateParams(objectMap(values.get("templateParams")));
+            normalizeRecommendationParams(result);
+            normalizeEquivalentRelationExists(result, localMatch);
             Optional<String> failure = validationFailure(result, tableFields, localMatch);
             if (failure.isPresent() && normalizeEquivalentFieldExpression(result, tableFields, localMatch)) {
                 failure = validationFailure(result, tableFields, localMatch);
@@ -192,6 +194,171 @@ public class AiAssistService {
         } catch (Exception ex) {
             return RecommendationParseResult.failure("模型返回内容不是合法推荐 JSON");
         }
+    }
+
+    private void normalizeRecommendationParams(RuleBindingRecommendationResult result) {
+        Map<String, Object> params = result.getTemplateParams();
+        if ("FIELD_EXPRESSION".equals(result.getTemplateCode()) && params.get("expression") instanceof Map) {
+            Object expression = params.get("expression");
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            normalized.put("tableName", params.get("tableName"));
+            normalized.put("conditions", Collections.singletonList(expression));
+            result.setTemplateCode("ROW_EXPRESSION");
+            result.setTemplateParams(normalized);
+            return;
+        }
+        if ("AGGREGATION_EQUALS".equals(result.getTemplateCode())) {
+            result.setTemplateCode("AGGREGATE_ASSERT");
+            result.setTemplateParams(normalizeAggregationEqualsParams(params));
+            return;
+        }
+        if ("FIELD_EQUALS".equals(result.getTemplateCode())) {
+            result.setTemplateCode("JOIN_ASSERT");
+            result.setTemplateParams(normalizeFieldEqualsParams(params));
+            return;
+        }
+        if ("RELATION_EXISTS".equals(result.getTemplateCode())) {
+            normalizeRelationExistsParams(params);
+            return;
+        }
+        if (!"ROW_EXPRESSION".equals(result.getTemplateCode())) {
+            return;
+        }
+        Object conditions = params.get("conditions");
+        if (conditions instanceof Map) {
+            params.put("conditions", Collections.singletonList(conditions));
+        }
+    }
+
+    private Map<String, Object> normalizeAggregationEqualsParams(Map<String, Object> params) {
+        String groupBy = objectString(params.get("groupBy"));
+        String targetKey = objectString(params.get("targetKey"));
+        if (isBlank(targetKey)) {
+            targetKey = groupBy;
+        }
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("source", params.get("source"));
+        normalized.put("target", params.get("target"));
+        normalized.put("groupBy", Collections.singletonList(relationKey(groupBy, targetKey)));
+        normalized.put("aggregate", aggregate("SUM", params.get("sum")));
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", "==");
+        assertion.put("tolerance", params.getOrDefault("tolerance", 0.01));
+        assertion.put("targetField", params.get("targetField"));
+        normalized.put("assert", assertion);
+        return normalized;
+    }
+
+    private Map<String, Object> normalizeFieldEqualsParams(Map<String, Object> params) {
+        String key = objectString(params.get("key"));
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("source", params.get("source"));
+        normalized.put("target", params.get("target"));
+        normalized.put("keys", Collections.singletonList(relationKey(key, key)));
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("left", joinSourceField(params.get("sourceField")));
+        assertion.put("op", "==");
+        assertion.put("right", joinTargetField(params.get("targetField")));
+        normalized.put("assert", assertion);
+        return normalized;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void normalizeRelationExistsParams(Map<String, Object> params) {
+        normalizePredicateParam(params, "sourceWhere");
+        normalizePredicateParam(params, "targetWhere");
+        Object sourceExists = params.get("sourceExists");
+        if (sourceExists instanceof Map) {
+            normalizePredicateParam((Map<String, Object>) sourceExists, "targetWhere");
+        }
+    }
+
+    private void normalizePredicateParam(Map<String, Object> params, String key) {
+        Object predicate = params.get(key);
+        if (predicate != null) {
+            params.put(key, normalizePredicate(predicate));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object normalizePredicate(Object predicate) {
+        if (predicate instanceof List) {
+            List<Object> normalized = new ArrayList<>();
+            for (Object item : (List<?>) predicate) {
+                normalized.add(normalizePredicate(item));
+            }
+            return normalized;
+        }
+        if (!(predicate instanceof Map)) {
+            return predicate;
+        }
+        Map<String, Object> value = objectMap(predicate);
+        if (!value.containsKey("left") && value.containsKey("field") && value.containsKey("operator")) {
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            normalized.put("left", relationField(value.get("field")));
+            normalized.put("operator", value.get("operator"));
+            normalized.put("right", relationPredicateRight(value));
+            return normalized;
+        }
+        for (String key : Arrays.asList("and", "or")) {
+            if (value.get(key) instanceof List) {
+                List<Object> normalized = new ArrayList<>();
+                for (Object item : (List<?>) value.get(key)) {
+                    normalized.add(normalizePredicate(item));
+                }
+                value.put(key, normalized);
+            }
+        }
+        if (value.containsKey("not")) {
+            value.put("not", normalizePredicate(value.get("not")));
+        }
+        return value;
+    }
+
+    private Map<String, Object> relationField(Object field) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("field", field);
+        return result;
+    }
+
+    private Object relationPredicateRight(Map<String, Object> predicate) {
+        Object rawValue = predicate.containsKey("value") ? predicate.get("value") : predicate.get("literal");
+        if (rawValue instanceof List || rawValue instanceof Map) {
+            return rawValue;
+        }
+        return literal(rawValue);
+    }
+
+    private Map<String, Object> relationKey(String sourceField, String targetField) {
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put("sourceField", sourceField);
+        key.put("targetField", targetField);
+        return key;
+    }
+
+    private Map<String, Object> joinSourceField(Object field) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("sourceField", field);
+        return expression;
+    }
+
+    private Map<String, Object> joinTargetField(Object field) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("targetField", field);
+        return expression;
+    }
+
+    private Map<String, Object> aggregate(String fn, Object field) {
+        Map<String, Object> aggregate = new LinkedHashMap<>();
+        aggregate.put("fn", fn);
+        aggregate.put("field", field);
+        return aggregate;
+    }
+
+    private Map<String, Object> literal(Object value) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("literal", value);
+        return expression;
     }
 
     private Optional<AnalysisResult> parseAnalysisResult(String content) {
@@ -267,8 +434,8 @@ public class AiAssistService {
         return "你是业务规则模板推荐助手。只允许输出 JSON，字段为 templateCode、templateParams、confidence、explanation。"
                 + "templateCode 只能是 NOT_NULL、NON_NEGATIVE、NUMERIC_TYPE、FIELD_EXPRESSION、"
                 + "ROW_EXPRESSION、EXISTS_IN_TABLE、RELATION_EXISTS、FIELD_EQUALS、JOIN_ASSERT、AGGREGATION_EQUALS、AGGREGATE_ASSERT、DUPLICATE_ASSERT、DUPLICATE_CHECK。"
-                + "字段级模板参数必须包含 tableName 和 fields；FIELD_EXPRESSION 参数必须包含 tableName 和 expression。"
-                + "ROW_EXPRESSION 参数必须包含 tableName 和 conditions；conditions 每项包含 left、operator、right，"
+                + "字段级模板参数必须包含 tableName 和 fields；FIELD_EXPRESSION 参数必须包含 tableName 和字符串 expression，结构化条件对象必须使用 ROW_EXPRESSION。"
+                + "ROW_EXPRESSION 参数必须包含 tableName 和 conditions；conditions 必须是数组，即使只有一条条件也要用数组；每项包含 left、operator、right，"
                 + "可选 when 表达仅在满足条件时执行；operator 支持 ==、!=、>、>=、<、<=、in、notIn、isNull、isNotNull。"
                 + "表达式节点可使用 field、literal/value，或 op + left + right 表达 +、-、*、/，"
                 + "也可使用 if + then + else 表达条件分支，if 内包含 left、operator、right。"
@@ -284,6 +451,7 @@ public class AiAssistService {
                 + "AGGREGATE_ASSERT 参数必须包含 source、target、groupBy、aggregate、assert；"
                 + "groupBy 可为字段名或 {sourceField,targetField} 数组，aggregate 包含 fn 和 field；"
                 + "assert 包含 op、tolerance，且必须提供 targetField 或 aggregate；"
+                + "聚合汇总一致性优先使用 AGGREGATE_ASSERT，AGGREGATION_EQUALS 仅作为旧格式兼容；"
                 + "DUPLICATE_ASSERT 参数必须包含 table、groupBy、assert，可选 where；"
                 + "assert 可为 {op:'<=',count:1} 或 {count:'<= 1'}，用于比较分组记录数；"
                 + "DUPLICATE_CHECK 参数必须包含 tableName 和 groupBy，可选 where 过滤条件。"
@@ -374,8 +542,15 @@ public class AiAssistService {
             return Optional.of(ex.getMessage());
         }
         if (localMatch.isApplicable() && "HIGH".equals(localMatch.getConfidence())
-                && !localMatch.getTemplateCode().equals(result.getTemplateCode())) {
+                && !localMatch.getTemplateCode().equals(result.getTemplateCode())
+                && !crossTemplateCoversLocal(result, localMatch)) {
             return Optional.of("模型推荐模板弱化了本地高置信语义映射");
+        }
+        if (localMatch.isApplicable() && "HIGH".equals(localMatch.getConfidence())
+                && "RELATION_EXISTS".equals(localMatch.getTemplateCode())
+                && "RELATION_EXISTS".equals(result.getTemplateCode())
+                && !relationExistsCoversLocal(result.getTemplateParams(), localMatch.getTemplateParams())) {
+            return Optional.of("模型关系存在模板未覆盖本地语义映射条件");
         }
         if (localMatch.isApplicable() && "FIELD_EXPRESSION".equals(localMatch.getTemplateCode())
                 && "FIELD_EXPRESSION".equals(result.getTemplateCode())) {
@@ -393,6 +568,55 @@ public class AiAssistService {
             }
         }
         return Optional.empty();
+    }
+
+    private boolean crossTemplateCoversLocal(RuleBindingRecommendationResult result,
+                                             RuleTemplateSemanticMatch localMatch) {
+        return "NOT_NULL".equals(localMatch.getTemplateCode())
+                && "ROW_EXPRESSION".equals(result.getTemplateCode())
+                && rowExpressionCoversNotNull(result.getTemplateParams(), localMatch.getTemplateParams());
+    }
+
+    private boolean rowExpressionCoversNotNull(Map<String, Object> params, Map<String, Object> localParams) {
+        if (!objectString(params.get("tableName")).equals(objectString(localParams.get("tableName")))) {
+            return false;
+        }
+        List<String> actualFields = unconditionalIsNotNullFields(params.get("conditions"));
+        for (String field : stringValues(localParams.get("fields"))) {
+            if (!actualFields.contains(field)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private List<String> unconditionalIsNotNullFields(Object rawConditions) {
+        List<String> fields = new ArrayList<>();
+        for (Map<?, ?> condition : rowConditionMaps(rawConditions)) {
+            if (!condition.containsKey("when")
+                    && "isNotNull".equals(objectString(condition.get("operator")))) {
+                fields.add(rowExpressionText(condition.get("left")));
+            }
+        }
+        return fields;
+    }
+
+    private List<String> stringValues(Object rawValues) {
+        List<String> values = new ArrayList<>();
+        if (rawValues instanceof List) {
+            for (Object item : (List<?>) rawValues) {
+                String value = objectString(item);
+                if (!isBlank(value)) {
+                    values.add(value);
+                }
+            }
+            return values;
+        }
+        String value = objectString(rawValues);
+        if (!isBlank(value)) {
+            values.add(value);
+        }
+        return values;
     }
 
     private boolean normalizeEquivalentFieldExpression(RuleBindingRecommendationResult result,
@@ -418,6 +642,152 @@ public class AiAssistService {
         return true;
     }
 
+    private boolean normalizeEquivalentRelationExists(RuleBindingRecommendationResult result,
+                                                      RuleTemplateSemanticMatch localMatch) {
+        if (!localMatch.isApplicable() || !"HIGH".equals(localMatch.getConfidence())
+                || !"RELATION_EXISTS".equals(localMatch.getTemplateCode())
+                || !"RELATION_EXISTS".equals(result.getTemplateCode())) {
+            return false;
+        }
+        Map<String, Object> params = result.getTemplateParams();
+        Map<String, Object> localParams = localMatch.getTemplateParams();
+        if (!relationExistsEquivalentSameDirection(params, localParams)
+                && !relationExistsEquivalentReversed(params, localParams)) {
+            return false;
+        }
+        result.setTemplateParams(new LinkedHashMap<>(localParams));
+        return true;
+    }
+
+    private boolean relationExistsEquivalentSameDirection(Map<String, Object> params, Map<String, Object> localParams) {
+        return objectString(params.get("source")).equals(objectString(localParams.get("source")))
+                && objectString(params.get("target")).equals(objectString(localParams.get("target")))
+                && relationExpectExists(params) == relationExpectExists(localParams)
+                && containsAllRelationKeys(params.get("keys"), localParams.get("keys"))
+                && relationPredicateCompatible(params.get("sourceWhere"), localParams.get("sourceWhere"), true)
+                && relationPredicateCompatible(params.get("targetWhere"), localParams.get("targetWhere"), true)
+                && sourceExistsCompatible(params.get("sourceExists"), localParams.get("sourceExists"));
+    }
+
+    private boolean relationExistsEquivalentReversed(Map<String, Object> params, Map<String, Object> localParams) {
+        return objectString(params.get("source")).equals(objectString(localParams.get("target")))
+                && objectString(params.get("target")).equals(objectString(localParams.get("source")))
+                && relationExpectExists(params) == relationExpectExists(localParams)
+                && containsAllRelationKeysReversed(params.get("keys"), localParams.get("keys"))
+                && relationPredicateCompatible(params.get("sourceWhere"), localParams.get("targetWhere"), true)
+                && relationPredicateCompatible(params.get("targetWhere"), localParams.get("sourceWhere"), true)
+                && params.get("sourceExists") == null
+                && localParams.get("sourceExists") == null;
+    }
+
+    private boolean relationExpectExists(Map<String, Object> params) {
+        return !Boolean.FALSE.equals(params.get("expectExists"));
+    }
+
+    private boolean containsAllRelationKeys(Object actualKeys, Object requiredKeys) {
+        List<String> actual = relationKeyTexts(actualKeys);
+        for (String required : relationKeyTexts(requiredKeys)) {
+            if (!actual.contains(required)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean containsAllRelationKeysReversed(Object actualKeys, Object requiredKeys) {
+        List<String> actual = relationKeyTexts(actualKeys);
+        for (String required : reversedRelationKeyTexts(requiredKeys)) {
+            if (!actual.contains(required)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private List<String> relationKeyTexts(Object rawKeys) {
+        List<String> result = new ArrayList<>();
+        if (!(rawKeys instanceof List)) {
+            return result;
+        }
+        for (Object item : (List<?>) rawKeys) {
+            Map<?, ?> key = objectMapRaw(item);
+            String sourceField = objectString(key.get("sourceField"));
+            String targetField = objectString(key.get("targetField"));
+            if (!isBlank(sourceField) && !isBlank(targetField)) {
+                result.add(sourceField + "->" + targetField);
+            }
+        }
+        return result;
+    }
+
+    private List<String> reversedRelationKeyTexts(Object rawKeys) {
+        List<String> result = new ArrayList<>();
+        if (!(rawKeys instanceof List)) {
+            return result;
+        }
+        for (Object item : (List<?>) rawKeys) {
+            Map<?, ?> key = objectMapRaw(item);
+            String sourceField = objectString(key.get("sourceField"));
+            String targetField = objectString(key.get("targetField"));
+            if (!isBlank(sourceField) && !isBlank(targetField)) {
+                result.add(targetField + "->" + sourceField);
+            }
+        }
+        return result;
+    }
+
+    private boolean relationPredicateCompatible(Object actual, Object required, boolean allowMissingActual) {
+        if (required == null) {
+            return true;
+        }
+        if (actual == null) {
+            return allowMissingActual;
+        }
+        return relationPredicateText(actual).equals(relationPredicateText(required));
+    }
+
+    private String relationPredicateText(Object rawPredicate) {
+        Map<?, ?> predicate = objectMapRaw(rawPredicate);
+        if (predicate.containsKey("and") || predicate.containsKey("or")) {
+            String operator = predicate.containsKey("and") ? "and" : "or";
+            List<String> items = new ArrayList<>();
+            Object children = predicate.get(operator);
+            if (children instanceof List) {
+                for (Object child : (List<?>) children) {
+                    items.add(relationPredicateText(child));
+                }
+            }
+            Collections.sort(items);
+            return operator + "(" + String.join(",", items) + ")";
+        }
+        if (predicate.containsKey("not")) {
+            return "not(" + relationPredicateText(predicate.get("not")) + ")";
+        }
+        return rowConditionText(predicate);
+    }
+
+    private boolean sourceExistsCompatible(Object actual, Object required) {
+        if (required == null) {
+            return true;
+        }
+        Map<?, ?> actualMap = objectMapRaw(actual);
+        Map<?, ?> requiredMap = objectMapRaw(required);
+        return !actualMap.isEmpty()
+                && objectString(actualMap.get("target")).equals(objectString(requiredMap.get("target")))
+                && containsAllRelationKeys(actualMap.get("keys"), requiredMap.get("keys"))
+                && relationPredicateCompatible(actualMap.get("targetWhere"), requiredMap.get("targetWhere"), false);
+    }
+
+    private boolean relationExistsCoversLocal(Map<String, Object> params, Map<String, Object> localParams) {
+        return objectString(params.get("source")).equals(objectString(localParams.get("source")))
+                && objectString(params.get("target")).equals(objectString(localParams.get("target")))
+                && relationExpectExists(params) == relationExpectExists(localParams)
+                && containsAllRelationKeys(params.get("keys"), localParams.get("keys"))
+                && relationPredicateCompatible(params.get("sourceWhere"), localParams.get("sourceWhere"), false)
+                && relationPredicateCompatible(params.get("targetWhere"), localParams.get("targetWhere"), false)
+                && sourceExistsCompatible(params.get("sourceExists"), localParams.get("sourceExists"));
+    }
+
     private String fallbackWarning(String failureReason) {
         if (isBlank(failureReason)) {
             return "模型推荐未通过校验，已降级为本地推荐";
@@ -426,9 +796,11 @@ public class AiAssistService {
     }
 
     private boolean containsAllRowConditions(Object conditions, Object requiredConditions) {
+        List<Map<?, ?>> actualConditions = rowConditionMaps(conditions);
         List<String> actual = rowConditionTexts(conditions);
-        for (String required : rowConditionTexts(requiredConditions)) {
-            if (!actual.contains(required)) {
+        for (Map<?, ?> requiredCondition : rowConditionMaps(requiredConditions)) {
+            String required = rowConditionTextWithWhen(requiredCondition);
+            if (!actual.contains(required) && !rowConditionCoveredBySplitEquality(actualConditions, requiredCondition)) {
                 return false;
             }
         }
@@ -437,21 +809,35 @@ public class AiAssistService {
 
     private List<String> rowConditionTexts(Object rawConditions) {
         List<String> result = new ArrayList<>();
+        for (Map<?, ?> condition : rowConditionMaps(rawConditions)) {
+            result.add(rowConditionTextWithWhen(condition));
+        }
+        return result;
+    }
+
+    private List<Map<?, ?>> rowConditionMaps(Object rawConditions) {
+        List<Map<?, ?>> result = new ArrayList<>();
+        if (rawConditions instanceof Map) {
+            result.add((Map<?, ?>) rawConditions);
+            return result;
+        }
         if (!(rawConditions instanceof List)) {
             return result;
         }
         for (Object item : (List<?>) rawConditions) {
-            if (!(item instanceof Map)) {
-                continue;
+            if (item instanceof Map) {
+                result.add((Map<?, ?>) item);
             }
-            Map<?, ?> condition = (Map<?, ?>) item;
-            String text = rowConditionText(condition);
-            if (condition.containsKey("when")) {
-                text = "when " + rowConditionText(objectMapRaw(condition.get("when"))) + " then " + text;
-            }
-            result.add(text);
         }
         return result;
+    }
+
+    private String rowConditionTextWithWhen(Map<?, ?> condition) {
+        String text = rowConditionText(condition);
+        if (condition.containsKey("when")) {
+            text = "when " + rowConditionText(objectMapRaw(condition.get("when"))) + " then " + text;
+        }
+        return text;
     }
 
     private String rowConditionText(Map<?, ?> condition) {
@@ -461,6 +847,60 @@ public class AiAssistService {
         }
         return rowExpressionText(condition.get("left")) + " " + operator + " "
                 + rowExpressionText(condition.get("right"));
+    }
+
+    private boolean rowConditionCoveredBySplitEquality(List<Map<?, ?>> actualConditions, Map<?, ?> requiredCondition) {
+        Map<?, ?> requiredWhen = objectMapRaw(requiredCondition.get("when"));
+        if (!"in".equals(objectString(requiredWhen.get("operator")))) {
+            return false;
+        }
+        List<String> requiredValues = rowExpressionValues(requiredWhen.get("right"));
+        if (requiredValues.isEmpty()) {
+            return false;
+        }
+        for (String value : requiredValues) {
+            boolean covered = false;
+            for (Map<?, ?> actualCondition : actualConditions) {
+                if (sameRowAssertion(actualCondition, requiredCondition)
+                        && sameEqualityWhen(actualCondition, requiredWhen, value)) {
+                    covered = true;
+                    break;
+                }
+            }
+            if (!covered) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean sameRowAssertion(Map<?, ?> actualCondition, Map<?, ?> requiredCondition) {
+        return rowExpressionText(actualCondition.get("left")).equals(rowExpressionText(requiredCondition.get("left")))
+                && objectString(actualCondition.get("operator")).equals(objectString(requiredCondition.get("operator")))
+                && rowExpressionText(actualCondition.get("right")).equals(rowExpressionText(requiredCondition.get("right")));
+    }
+
+    private boolean sameEqualityWhen(Map<?, ?> actualCondition, Map<?, ?> requiredWhen, String value) {
+        Map<?, ?> actualWhen = objectMapRaw(actualCondition.get("when"));
+        String operator = objectString(actualWhen.get("operator"));
+        return ("==".equals(operator) || "=".equals(operator))
+                && rowExpressionText(actualWhen.get("left")).equals(rowExpressionText(requiredWhen.get("left")))
+                && rowExpressionText(actualWhen.get("right")).equals(value);
+    }
+
+    private List<String> rowExpressionValues(Object rawExpression) {
+        List<String> values = new ArrayList<>();
+        if (rawExpression instanceof List) {
+            for (Object item : (List<?>) rawExpression) {
+                values.add(rowExpressionText(item));
+            }
+            return values;
+        }
+        String value = rowExpressionText(rawExpression);
+        if (!isBlank(value)) {
+            values.add(value);
+        }
+        return values;
     }
 
     private String rowExpressionText(Object rawExpression) {
@@ -479,10 +919,10 @@ public class AiAssistService {
             return objectString(expression.get("field"));
         }
         if (expression.containsKey("literal")) {
-            return objectString(expression.get("literal"));
+            return rowExpressionText(expression.get("literal"));
         }
         if (expression.containsKey("value")) {
-            return objectString(expression.get("value"));
+            return rowExpressionText(expression.get("value"));
         }
         if (expression.containsKey("if")) {
             Map<?, ?> predicate = objectMapRaw(expression.get("if"));
@@ -558,10 +998,12 @@ public class AiAssistService {
         }
         String leftValue = compact(left);
         String rightValue = stripOuterParentheses(compact(right));
-        return normalized.contains("ABS(" + leftValue + "-(" + rightValue + "))")
+        return normalized.contains("ABS(" + leftValue + "-" + rightValue + ")")
+                || normalized.contains("ABS(" + leftValue + "-(" + rightValue + "))")
                 || normalized.contains("ABS((" + leftValue + ")-(" + rightValue + "))")
                 || normalized.contains("ABS((" + leftValue + ")-" + rightValue + ")")
                 || normalized.contains("ABS((" + rightValue + ")-" + leftValue + ")")
+                || normalized.contains("ABS((" + rightValue + ")-(" + leftValue + "))")
                 || normalized.contains("ABS(" + rightValue + "-" + leftValue + ")");
     }
 

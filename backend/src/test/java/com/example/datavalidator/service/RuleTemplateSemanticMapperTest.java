@@ -21,6 +21,7 @@ class RuleTemplateSemanticMapperTest {
 
         assertThat(match.isApplicable()).isTrue();
         assertThat(match.getTemplateCode()).isEqualTo("NOT_NULL");
+        assertThat(match.getConfidence()).isEqualTo("HIGH");
         assertThat(match.getTemplateParams()).containsEntry("tableName", "t_order");
         assertThat(match.getTemplateParams().get("fields")).asList().containsExactly("用户ID", "订单状态");
     }
@@ -66,6 +67,55 @@ class RuleTemplateSemanticMapperTest {
         assertThat(match.getConfidence()).isEqualTo("HIGH");
         assertThat(match.getTemplateParams()).containsEntry("tableName", "t_inventory_log");
         assertThat(match.getTemplateParams().get("conditions")).asList().hasSize(1);
+    }
+
+    @Test
+    void mapsListedProductStockToSingleConditionalRowExpression() {
+        RuleTemplateSemanticMatch match = mapper.recommend(rule("R009", "上架商品库存校验",
+                "上架状态商品库存数量应大于0",
+                "SELECT * FROM t_product WHERE 上架状态='上架' AND 库存数量<=0", "t_product"),
+                tables(table("t_product", "商品ID", "商品名称", "库存数量", "上架状态")));
+
+        assertThat(match.isApplicable()).isTrue();
+        assertThat(match.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(match.getTemplateParams()).containsEntry("tableName", "t_product");
+        assertThat(match.getTemplateParams().get("conditions")).asList().hasSize(1);
+        assertThat(match.getTemplateParams().get("conditions").toString())
+                .contains("库存数量", "上架状态", "上架");
+    }
+
+    @Test
+    void mapsInventoryMovementQuantityToSingleInCondition() {
+        RuleTemplateSemanticMatch match = mapper.recommend(rule("R016", "入库数量正数校验",
+                "入库变动数量必须为正数，出库变动数量必须为正数",
+                "SELECT * FROM t_inventory_log WHERE (变动类型='入库' AND 变动数量<0) "
+                        + "OR (变动类型='出库' AND 变动数量<0)",
+                "t_inventory_log"),
+                tables(table("t_inventory_log", "流水ID", "变动类型", "变动数量")));
+
+        assertThat(match.isApplicable()).isTrue();
+        assertThat(match.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(match.getTemplateParams()).containsEntry("tableName", "t_inventory_log");
+        assertThat(match.getTemplateParams().get("conditions")).asList().hasSize(1);
+        assertThat(match.getTemplateParams().get("conditions").toString())
+                .contains("变动数量", "变动类型", "in", "入库", "出库");
+    }
+
+    @Test
+    void mapsOrderStatusTimeRuleToOnlyTwoConditionalExpressions() {
+        RuleTemplateSemanticMatch match = mapper.recommend(rule("R025", "订单状态时间逻辑校验",
+                "待支付订单不应有支付时间；已支付/已发货/已完成订单支付时间不得早于下单时间",
+                "SELECT * FROM t_order WHERE (订单状态='待支付' AND 支付时间 IS NOT NULL) "
+                        + "OR (订单状态 IN ('已支付','已发货','已完成') AND 支付时间<下单时间)",
+                "t_order"),
+                tables(table("t_order", "订单ID", "订单状态", "下单时间", "支付时间")));
+
+        assertThat(match.isApplicable()).isTrue();
+        assertThat(match.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(match.getTemplateParams()).containsEntry("tableName", "t_order");
+        assertThat(match.getTemplateParams().get("conditions")).asList().hasSize(2);
+        assertThat(match.getTemplateParams().get("conditions").toString())
+                .doesNotContain("operator=>=, right={field=下单时间}, when={left={field=订单状态}, operator===, right={literal=待支付}");
     }
 
     @Test

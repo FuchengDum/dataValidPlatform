@@ -121,7 +121,7 @@ public class TemplateRuleExecutor {
                     TemplateExpressionEvaluator.evaluate(expression, row);
             if (result.isPresent() && !result.get().isSatisfied()) {
                 findings.add(finding(rule, table, row, result.get().getLeftField(),
-                        result.get().getActualSummary(), result.get().getFailedCondition(),
+                        result.get().getActualSummary(), result.get().getExpectedSummary(),
                         expression + " 不成立", "CALCULATION"));
             }
         }
@@ -138,7 +138,7 @@ public class TemplateRuleExecutor {
             if (result.isPresent()) {
                 RowExpressionEvaluator.Result failed = result.get();
                 findings.add(finding(rule, table, row, failed.getFieldName(),
-                        failed.getActualSummary(), failed.getFailedCondition(),
+                        failed.getActualSummary(), failed.getExpectedSummary(),
                         "行表达式条件不成立", "CALCULATION"));
             }
         }
@@ -264,9 +264,8 @@ public class TemplateRuleExecutor {
             String expected = targetRow.value(targetField);
             if (!actual.equals(expected)) {
                 findings.add(finding(rule, source, row, sourceField,
-                        source.getLogicalName() + "." + sourceField + "=" + actual
-                                + "；" + target.getLogicalName() + "." + targetField + "=" + expected,
-                        sourceField + " == " + target.getLogicalName() + "." + targetField,
+                        source.getLogicalName() + "." + sourceField + "=" + actual,
+                        target.getLogicalName() + "." + targetField + "=" + expected,
                         "关联字段值不一致", "RELATION"));
             }
         }
@@ -300,8 +299,8 @@ public class TemplateRuleExecutor {
                 JoinValue expected = joinValue(assertion.right, source, sourceRow, target, targetRow);
                 if (!joinCompare(actual, expected, assertion)) {
                     findings.add(finding(rule, source, sourceRow, actual.fieldName,
-                            actual.summary + "；" + expected.summary,
-                            actual.text + " " + assertion.operator + " " + expected.text,
+                            actual.summary,
+                            expected.summary,
                             "关联断言不成立", "RELATION"));
                 }
             }
@@ -461,9 +460,8 @@ public class TemplateRuleExecutor {
             Optional<BigDecimal> actual = ValueParsers.decimal(row.value(targetField));
             if (expected != null && (!actual.isPresent() || actual.get().compareTo(expected) != 0)) {
                 findings.add(finding(rule, target, row, targetField,
-                        targetField + "=" + row.value(targetField) + "；"
-                                + source.getLogicalName() + "." + sumField + " 汇总=" + formatDecimal(expected),
-                        targetField + " == " + source.getLogicalName() + "." + sumField + " 汇总值",
+                        targetField + "=" + row.value(targetField),
+                        source.getLogicalName() + "." + sumField + " 汇总=" + formatDecimal(expected),
                         "聚合结果不一致",
                         "CALCULATION"));
             }
@@ -640,10 +638,8 @@ public class TemplateRuleExecutor {
                                                           DataRow row, AggregateSpec sourceAggregate,
                                                           AggregateAssertion assertion, BigDecimal expected) {
         return finding(rule, target, row, assertion.targetField,
-                assertion.targetField + "=" + row.value(assertion.targetField) + "；"
-                        + aggregateLabel(source, sourceAggregate) + "=" + formatDecimal(expected),
-                assertion.targetField + " " + assertion.operator + " "
-                        + aggregateLabel(source, sourceAggregate) + "值",
+                assertion.targetField + "=" + row.value(assertion.targetField),
+                aggregateLabel(source, sourceAggregate) + "=" + formatDecimal(expected),
                 "聚合结果不一致", "CALCULATION");
     }
 
@@ -651,10 +647,8 @@ public class TemplateRuleExecutor {
                                                      AggregateBucket targetBucket, AggregateSpec sourceAggregate,
                                                      AggregateAssertion assertion, BigDecimal expected) {
         return finding(rule, target, targetBucket.firstRow, assertion.targetAggregate.field,
-                aggregateLabel(target, assertion.targetAggregate) + "=" + formatDecimal(targetBucket.value)
-                        + "；" + aggregateLabel(source, sourceAggregate) + "=" + formatDecimal(expected),
-                aggregateLabel(target, assertion.targetAggregate) + " " + assertion.operator + " "
-                        + aggregateLabel(source, sourceAggregate) + "值",
+                aggregateLabel(target, assertion.targetAggregate) + "=" + formatDecimal(targetBucket.value),
+                aggregateLabel(source, sourceAggregate) + "=" + formatDecimal(expected),
                 "聚合结果不一致", "CALCULATION");
     }
 

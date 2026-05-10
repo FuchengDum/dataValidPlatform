@@ -84,8 +84,8 @@ class TemplateRuleExecutorTest {
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("I002");
         assertThat(findings.get(0).getFieldName()).isEqualTo("小计金额");
-        assertThat(findings.get(0).getActualValue()).contains("小计金额=20", "单价 * 数量=24");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("小计金额 == 单价 * 数量");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("小计金额=20");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("单价 * 数量=24");
     }
 
     @Test
@@ -104,10 +104,10 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(2);
         assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("ORD002", "ORD003");
-        assertThat(findings.get(0).getActualValue()).contains("实付金额=95", "订单金额 - 优惠金额=90");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("实付金额 == 订单金额 - 优惠金额");
-        assertThat(findings.get(1).getActualValue()).contains("实付金额=110", "订单金额=100");
-        assertThat(findings.get(1).getExpectedValue()).isEqualTo("实付金额 <= 订单金额");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("实付金额=95");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("订单金额 - 优惠金额=90");
+        assertThat(findings.get(1).getActualValue()).isEqualTo("实付金额=110");
+        assertThat(findings.get(1).getExpectedValue()).isEqualTo("订单金额=100");
     }
 
     @Test
@@ -129,9 +129,29 @@ class TemplateRuleExecutorTest {
         ValidationFinding finding = findings.get(0);
         assertThat(finding.getRecordKey()).isEqualTo("ORD006");
         assertThat(finding.getFieldName()).isEqualTo("实付金额");
-        assertThat(finding.getActualValue()).contains("实付金额=520", "订单金额 - 优惠金额=470");
-        assertThat(finding.getExpectedValue()).isEqualTo("实付金额 == 订单金额 - 优惠金额");
+        assertThat(finding.getActualValue()).isEqualTo("实付金额=520");
+        assertThat(finding.getExpectedValue()).isEqualTo("订单金额 - 优惠金额=470");
         assertThat(finding.getDescription()).isEqualTo("行表达式条件不成立");
+    }
+
+    @Test
+    void rowExpressionTemplateAcceptsSingleConditionObject() {
+        DataTable orders = table("t_order", "订单ID",
+                row("ORD001", "订单ID", "ORD001", "订单金额", "100", "优惠金额", "40"),
+                row("ORD002", "订单ID", "ORD002", "订单金额", "100", "优惠金额", "60"));
+        RuleBinding binding = template("R004", "ROW_EXPRESSION")
+                .param("tableName", "t_order")
+                .param("conditions", condition(field("优惠金额"), "<=",
+                        op("*", field("订单金额"), literal(0.5))))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R004", "优惠金额合理性校验"),
+                tables(orders), binding);
+
+        assertThat(findings).hasSize(1);
+        assertThat(findings.get(0).getRecordKey()).isEqualTo("ORD002");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("优惠金额=60");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("订单金额 * 0.5=50");
     }
 
     @Test
@@ -151,8 +171,8 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("B002");
-        assertThat(findings.get(0).getActualValue()).contains("应收金额=950", "合同金额 - 减免金额=920");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("应收金额 == 合同金额 - 减免金额");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("应收金额=950");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("合同金额 - 减免金额=920");
     }
 
     @Test
@@ -180,8 +200,9 @@ class TemplateRuleExecutorTest {
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("LOG006");
         assertThat(findings.get(0).getFieldName()).isEqualTo("变动后库存");
-        assertThat(findings.get(0).getActualValue()).contains("变动后库存=4998", "变动前库存 +");
-        assertThat(findings.get(0).getExpectedValue()).contains("变动后库存 == 变动前库存 +");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("变动后库存=4998");
+        assertThat(findings.get(0).getExpectedValue())
+                .contains("变动前库存 +", "=4999");
     }
 
     @Test
@@ -205,8 +226,8 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(2);
         assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("ORD002", "ORD004");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("支付时间 isNull");
-        assertThat(findings.get(1).getExpectedValue()).isEqualTo("支付时间 >= 下单时间");
+        assertThat(findings.get(0).getExpectedValue()).doesNotContain("isNull");
+        assertThat(findings.get(1).getExpectedValue()).doesNotContain(">=");
     }
 
     @Test
@@ -341,8 +362,8 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("P002");
-        assertThat(findings.get(0).getActualValue()).isEqualTo("payment.用户ID=U999；order.用户ID=U002");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("用户ID == order.用户ID");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("payment.用户ID=U999");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("order.用户ID=U002");
         assertThat(findings.get(0).getDescription()).isEqualTo("关联字段值不一致");
     }
 
@@ -367,8 +388,8 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(2);
         assertThat(findings).extracting(ValidationFinding::getRecordKey).containsExactly("I002", "I003");
-        assertThat(findings.get(0).getActualValue()).isEqualTo("t_order_item.单价=49.98；t_product.售价=50.00");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("t_order_item.单价 == t_product.售价");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("t_order_item.单价=49.98");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("t_product.售价=50.00");
         assertThat(findings.get(0).getDescription()).isEqualTo("关联断言不成立");
         assertThat(findings.get(1).getDescription()).isEqualTo("关联记录不存在");
     }
@@ -394,8 +415,8 @@ class TemplateRuleExecutorTest {
 
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("O002");
-        assertThat(findings.get(0).getActualValue()).isEqualTo("订单金额=10；order_item.小计金额 汇总=8");
-        assertThat(findings.get(0).getExpectedValue()).isEqualTo("订单金额 == order_item.小计金额 汇总值");
+        assertThat(findings.get(0).getActualValue()).isEqualTo("订单金额=10");
+        assertThat(findings.get(0).getExpectedValue()).isEqualTo("order_item.小计金额 汇总=8");
         assertThat(findings.get(0).getDescription()).isEqualTo("聚合结果不一致");
     }
 
@@ -447,9 +468,36 @@ class TemplateRuleExecutorTest {
         ValidationFinding finding = findings.get(0);
         assertThat(finding.getRecordKey()).isEqualTo("O002");
         assertThat(finding.getFieldName()).isEqualTo("订单金额");
-        assertThat(finding.getActualValue()).isEqualTo("t_order.订单金额 汇总=10；t_order_item.小计金额 汇总=8");
-        assertThat(finding.getExpectedValue()).isEqualTo("t_order.订单金额 汇总 == t_order_item.小计金额 汇总值");
+        assertThat(finding.getActualValue()).isEqualTo("t_order.订单金额 汇总=10");
+        assertThat(finding.getExpectedValue()).isEqualTo("t_order_item.小计金额 汇总=8");
         assertThat(finding.getDescription()).isEqualTo("聚合结果不一致");
+    }
+
+    @Test
+    void aggregateAssertTemplateComparesGroupedSumToTargetField() {
+        DataTable payments = table("t_payment", "支付ID",
+                row("P001", "支付ID", "P001", "订单ID", "O001", "支付金额", "60"),
+                row("P002", "支付ID", "P002", "订单ID", "O001", "支付金额", "40"),
+                row("P003", "支付ID", "P003", "订单ID", "O002", "支付金额", "30"));
+        DataTable orders = table("t_order", "订单ID",
+                row("O001", "订单ID", "O001", "实付金额", "90"),
+                row("O002", "订单ID", "O002", "实付金额", "30"));
+        RuleBinding binding = template("R017", "AGGREGATE_ASSERT")
+                .param("source", "t_payment")
+                .param("target", "t_order")
+                .param("groupBy", Arrays.asList(relationKey("订单ID", "订单ID")))
+                .param("aggregate", aggregate("SUM", "支付金额"))
+                .param("assert", aggregateTargetFieldAssert("==", "实付金额", "0.01"))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R017", "支付汇总一致"),
+                tables(payments, orders), binding);
+
+        assertThat(findings).hasSize(1);
+        ValidationFinding finding = findings.get(0);
+        assertThat(finding.getRecordKey()).isEqualTo("O001");
+        assertThat(finding.getActualValue()).isEqualTo("实付金额=90");
+        assertThat(finding.getExpectedValue()).isEqualTo("t_payment.支付金额 汇总=100");
     }
 
     @Test
@@ -640,6 +688,14 @@ class TemplateRuleExecutorTest {
         Map<String, Object> assertion = new LinkedHashMap<>();
         assertion.put("op", operator);
         assertion.put("aggregate", targetAggregate);
+        assertion.put("tolerance", tolerance);
+        return assertion;
+    }
+
+    private Map<String, Object> aggregateTargetFieldAssert(String operator, String targetField, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("targetField", targetField);
         assertion.put("tolerance", tolerance);
         return assertion;
     }

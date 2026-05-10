@@ -174,6 +174,45 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingKeepsFieldTemplateWhenModelUsesRowExpressionForR002() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order\",\"conditions\":["
+                + "{\"left\":{\"field\":\"用户ID\"},\"operator\":\"isNotNull\"}]},"
+                + "\"confidence\":\"HIGH\",\"explanation\":\"模型误推荐行表达式\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R002"));
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
+        assertThat(result.getConfidence()).isEqualTo("HIGH");
+        assertThat(result.getWarnings().get(0)).contains("模型推荐校验失败")
+                .contains("模型推荐模板弱化了本地高置信语义映射");
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsRowExpressionCoveringNotNullForR002() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order\",\"conditions\":["
+                + "{\"left\":{\"field\":\"用户ID\"},\"operator\":\"isNotNull\"},"
+                + "{\"left\":{\"field\":\"订单状态\"},\"operator\":\"isNotNull\"},"
+                + "{\"left\":{\"field\":\"下单时间\"},\"operator\":\"isNotNull\"},"
+                + "{\"left\":{\"field\":\"收货地址\"},\"operator\":\"isNotNull\"},"
+                + "{\"left\":{\"field\":\"收货地址\"},\"operator\":\"!=\",\"right\":{\"literal\":\"\"}}]},"
+                + "\"confidence\":0.94,\"explanation\":\"模型推荐完整必填行表达式\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R002"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(5);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
     void recommendRuleBindingAcceptsValidExistsInTableModelRecommendation() {
         AiAssistService service = multiTableRecommendationService("R010", "明细商品存在性校验",
                 "订单明细商品ID必须存在于商品表",
@@ -215,6 +254,84 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingNormalizesFieldEqualsForR024() {
+        AiAssistService service = paymentOrderRecommendationService("R024", "支付用户与订单用户一致性",
+                "支付表用户ID应与订单表用户ID一致",
+                "t_payment.用户ID = t_order.用户ID by 订单ID",
+                Optional.of("{\"templateCode\":\"FIELD_EQUALS\","
+                        + "\"templateParams\":{\"source\":\"t_payment\",\"target\":\"t_order\","
+                        + "\"key\":\"订单ID\",\"sourceField\":\"用户ID\",\"targetField\":\"用户ID\"},"
+                        + "\"confidence\":0.98,\"explanation\":\"模型推荐旧字段一致模板\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R024"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("JOIN_ASSERT");
+        assertThat(result.getTemplateParams().get("keys")).asList().hasSize(1);
+        assertThat(result.getTemplateParams().get("assert")).asString().contains("用户ID");
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsLiteralListRowExpressionForR025() {
+        AiAssistService service = orderStatusRecommendationService("R025", "订单状态时间逻辑校验",
+                "待支付订单不应有支付时间；已支付/已发货/已完成订单支付时间不得早于下单时间",
+                "SELECT * FROM t_order WHERE (订单状态='待支付' AND 支付时间 IS NOT NULL) "
+                        + "OR (订单状态 IN ('已支付','已发货','已完成') AND 支付时间<下单时间)",
+                Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
+                        + "\"templateParams\":{\"tableName\":\"t_order\",\"conditions\":["
+                        + "{\"left\":{\"field\":\"支付时间\"},\"operator\":\"isNull\","
+                        + "\"when\":{\"left\":{\"field\":\"订单状态\"},\"operator\":\"==\","
+                        + "\"right\":{\"literal\":\"待支付\"}}},"
+                        + "{\"left\":{\"field\":\"支付时间\"},\"operator\":\">=\","
+                        + "\"right\":{\"field\":\"下单时间\"},"
+                        + "\"when\":{\"left\":{\"field\":\"订单状态\"},\"operator\":\"in\","
+                        + "\"right\":{\"literal\":[\"已支付\",\"已发货\",\"已完成\"]}}}]},"
+                        + "\"confidence\":0.96,\"explanation\":\"模型推荐订单状态时间逻辑\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R025"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingNormalizesReversedRelationExistsForR026() {
+        AiAssistService service = paymentOrderRecommendationService("R026", "订单状态流转校验",
+                "已取消订单不应有支付成功记录，除非退款金额等于支付金额",
+                "SELECT o.* FROM t_order o JOIN t_payment p ON o.订单ID=p.订单ID "
+                        + "WHERE o.订单状态='已取消' AND p.退款金额=0 AND p.支付状态='支付成功'",
+                Optional.of("{\"templateCode\":\"RELATION_EXISTS\","
+                        + "\"templateParams\":{\"source\":\"t_order\",\"target\":\"t_payment\","
+                        + "\"keys\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
+                        + "\"expectExists\":false,"
+                        + "\"sourceWhere\":{\"left\":{\"field\":\"订单状态\"},\"operator\":\"==\","
+                        + "\"right\":{\"literal\":\"已取消\"}},"
+                        + "\"targetWhere\":{\"and\":["
+                        + "{\"left\":{\"field\":\"支付状态\"},\"operator\":\"==\","
+                        + "\"right\":{\"literal\":\"支付成功\"}},"
+                        + "{\"left\":{\"field\":\"退款金额\"},\"operator\":\"==\","
+                        + "\"right\":{\"literal\":0}}]}},"
+                        + "\"confidence\":0.96,\"explanation\":\"模型推荐取消订单支付反向存在性\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R026"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("RELATION_EXISTS");
+        assertThat(result.getTemplateParams()).containsEntry("source", "t_payment");
+        assertThat(result.getTemplateParams()).containsEntry("target", "t_order");
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
     void recommendRuleBindingAcceptsValidAggregationModelRecommendation() {
         AiAssistService service = multiTableRecommendationService("R012", "订单金额汇总一致",
                 "订单金额应等于订单明细小计金额之和",
@@ -236,6 +353,55 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingNormalizesAggregationEqualsForR017() {
+        AiAssistService service = multiTableRecommendationService("R017", "订单-明细金额一致性",
+                "订单金额应等于其所有明细小计金额之和",
+                "SELECT o.订单ID FROM t_order o LEFT JOIN t_order_item i ON o.订单ID=i.订单ID "
+                        + "GROUP BY o.订单ID, o.订单金额 HAVING ABS(o.订单金额 - SUM(i.小计金额)) > 0.01",
+                Optional.of("{\"templateCode\":\"AGGREGATION_EQUALS\","
+                        + "\"templateParams\":{\"source\":\"t_order_item\",\"target\":\"t_order\","
+                        + "\"groupBy\":\"订单ID\",\"sum\":\"小计金额\","
+                        + "\"targetField\":\"订单金额\",\"targetKey\":\"订单ID\"},"
+                        + "\"confidence\":0.98,\"explanation\":\"模型推荐旧聚合相等模板\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R017"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("AGGREGATE_ASSERT");
+        assertThat(result.getTemplateParams().get("groupBy")).asList().hasSize(1);
+        assertThat(result.getTemplateParams().get("aggregate")).asString().contains("SUM", "小计金额");
+        assertThat(result.getTemplateParams().get("assert")).asString().contains("订单金额");
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingNormalizesAggregationEqualsForR020() {
+        AiAssistService service = multiTableRecommendationService("R020", "订单-支付金额一致性",
+                "订单实付金额应等于支付表中对应支付金额之和",
+                "SELECT o.订单ID, o.实付金额, SUM(p.支付金额) AS 已支付 FROM t_order o "
+                        + "LEFT JOIN t_payment p ON o.订单ID=p.订单ID GROUP BY o.订单ID, o.实付金额 "
+                        + "HAVING ABS(o.实付金额 - SUM(p.支付金额)) > 0.01",
+                Optional.of("{\"templateCode\":\"AGGREGATION_EQUALS\","
+                        + "\"templateParams\":{\"source\":\"t_payment\",\"target\":\"t_order\","
+                        + "\"groupBy\":\"订单ID\",\"sum\":\"支付金额\","
+                        + "\"targetField\":\"实付金额\",\"targetKey\":\"订单ID\"},"
+                        + "\"confidence\":0.98,\"explanation\":\"模型推荐旧聚合相等模板\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R020"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("AGGREGATE_ASSERT");
+        assertThat(result.getTemplateParams().get("groupBy")).asList().hasSize(1);
+        assertThat(result.getTemplateParams().get("aggregate")).asString().contains("SUM", "支付金额");
+        assertThat(result.getTemplateParams().get("assert")).asString().contains("实付金额");
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
     void recommendRuleBindingAcceptsValidDuplicateAssertModelRecommendation() {
         AiAssistService service = multiTableRecommendationService("R013", "重复支付检查",
                 "同一订单ID和支付状态不得重复",
@@ -253,6 +419,63 @@ class AiAssistServiceTest {
         assertThat(result.getTemplateCode()).isEqualTo("DUPLICATE_ASSERT");
         assertThat(result.getTemplateParams().get("groupBy")).asList().containsExactly("订单ID", "支付状态");
         assertThat(result.getTemplateParams().get("assert")).asString().contains("<=", "1");
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsRelationExistsValueNodesForR021() {
+        AiAssistService service = multiTableRecommendationService("R021", "订单-支付状态一致性",
+                "已支付/已发货/已完成订单必须有支付成功记录；已取消订单不应有支付成功记录(除非全额退款)",
+                "SELECT o.* FROM t_order o WHERE o.订单状态 IN ('已支付','已发货','已完成') "
+                        + "AND NOT EXISTS(SELECT 1 FROM t_payment p WHERE p.订单ID=o.订单ID "
+                        + "AND p.支付状态='支付成功')",
+                Optional.of("{\"templateCode\":\"RELATION_EXISTS\","
+                        + "\"templateParams\":{\"source\":\"t_order\",\"target\":\"t_payment\","
+                        + "\"keys\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
+                        + "\"expectExists\":true,"
+                        + "\"sourceWhere\":{\"left\":{\"field\":\"订单状态\"},\"operator\":\"in\","
+                        + "\"right\":{\"value\":[\"已支付\",\"已发货\",\"已完成\"]}},"
+                        + "\"targetWhere\":{\"left\":{\"field\":\"支付状态\"},\"operator\":\"==\","
+                        + "\"right\":{\"value\":\"支付成功\"}}},"
+                        + "\"confidence\":0.93,\"explanation\":\"模型推荐订单支付状态存在性\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R021"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("RELATION_EXISTS");
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingNormalizesRelationExistsPredicateAndCompletesR022() {
+        AiAssistService service = multiTableRecommendationService("R022", "订单-库存扣减一致性",
+                "已支付订单的每条明细应有对应的库存出库记录，出库数量应与明细数量一致",
+                "SELECT i.* FROM t_order_item i JOIN t_order o ON i.订单ID=o.订单ID "
+                        + "WHERE o.订单状态 IN ('已支付','已发货','已完成') "
+                        + "AND NOT EXISTS(SELECT 1 FROM t_inventory_log l WHERE l.关联订单ID=i.订单ID "
+                        + "AND l.商品ID=i.商品ID AND l.变动数量=i.数量)",
+                Optional.of("{\"templateCode\":\"RELATION_EXISTS\","
+                        + "\"templateParams\":{\"source\":\"t_order_item\",\"target\":\"t_inventory_log\","
+                        + "\"keys\":[{\"sourceField\":\"订单ID\",\"targetField\":\"关联订单ID\"},"
+                        + "{\"sourceField\":\"商品ID\",\"targetField\":\"商品ID\"},"
+                        + "{\"sourceField\":\"数量\",\"targetField\":\"变动数量\"}],"
+                        + "\"expectExists\":true,"
+                        + "\"sourceExists\":{\"target\":\"t_order\","
+                        + "\"keys\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
+                        + "\"targetWhere\":{\"field\":\"订单状态\",\"operator\":\"in\","
+                        + "\"value\":[\"已支付\",\"已发货\",\"已完成\"]}}},"
+                        + "\"confidence\":0.96,\"explanation\":\"模型推荐库存扣减存在性\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R022"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("RELATION_EXISTS");
+        assertThat(result.getTemplateParams().get("targetWhere")).asString().contains("变动类型", "出库");
+        assertThat(result.getTemplateParams().get("sourceExists")).asString().contains("订单状态", "已支付");
+        assertThat(result.getWarnings()).isEmpty();
     }
 
     @Test
@@ -294,6 +517,46 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingAcceptsSingleRowExpressionConditionObjectForR004() {
+        AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order\","
+                + "\"conditions\":{\"left\":{\"field\":\"优惠金额\"},\"operator\":\"<=\","
+                + "\"right\":{\"op\":\"*\",\"left\":{\"field\":\"订单金额\"},\"right\":{\"literal\":0.5}}}},"
+                + "\"confidence\":0.98,\"explanation\":\"模型推荐优惠金额比例约束\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R004"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(1);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsConditionalRowExpressionForR009() {
+        AiAssistService service = productRecommendationService("R009", "上架商品库存校验",
+                "上架状态商品库存数量应大于0",
+                "SELECT * FROM t_product WHERE 上架状态='上架' AND 库存数量<=0",
+                Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
+                        + "\"templateParams\":{\"tableName\":\"t_product\","
+                        + "\"conditions\":[{\"left\":{\"field\":\"库存数量\"},\"operator\":\">\","
+                        + "\"right\":{\"literal\":0},\"when\":{\"left\":{\"field\":\"上架状态\"},"
+                        + "\"operator\":\"==\",\"right\":{\"literal\":\"上架\"}}}]},"
+                        + "\"confidence\":0.98,\"explanation\":\"模型推荐上架库存约束\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R009"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(1);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
     void recommendRuleBindingNormalizesEquivalentFieldExpressionModelRecommendationForR006() {
         AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
                 + "\"templateParams\":{\"tableName\":\"t_order\","
@@ -324,6 +587,23 @@ class AiAssistServiceTest {
         assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
         assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
         assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingNormalizesAbsFieldExpressionWithoutRightParenthesesForR011() {
+        AiAssistService service = orderItemRecommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_order_item\","
+                + "\"expression\":\"ABS(小计金额 - 单价 * 数量) <= 0.01\"},"
+                + "\"confidence\":0.97,\"explanation\":\"模型推荐明细金额计算关系\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R011"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(1);
         assertThat(result.getWarnings()).isEmpty();
     }
 
@@ -387,6 +667,54 @@ class AiAssistServiceTest {
     }
 
     @Test
+    void recommendRuleBindingNormalizesFieldExpressionObjectForR015() {
+        AiAssistService service = inventoryRecommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
+                + "\"templateParams\":{\"tableName\":\"t_inventory_log\","
+                + "\"expression\":{\"left\":{\"field\":\"变动后库存\"},\"operator\":\"==\","
+                + "\"right\":{\"op\":\"+\",\"left\":{\"field\":\"变动前库存\"},"
+                + "\"right\":{\"if\":{\"left\":{\"field\":\"变动类型\"},\"operator\":\"==\","
+                + "\"right\":{\"literal\":\"入库\"}},\"then\":{\"field\":\"变动数量\"},"
+                + "\"else\":{\"op\":\"-\",\"left\":{\"literal\":0},\"right\":{\"field\":\"变动数量\"}}}}}},"
+                + "\"confidence\":0.96,\"explanation\":\"模型用 FIELD_EXPRESSION 返回结构化条件对象\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R015"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(1);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
+    void recommendRuleBindingAcceptsSplitEqualityConditionsForR016() {
+        AiAssistService service = inventoryRecommendationService("R016", "入库数量正数校验",
+                "入库变动数量必须为正数，出库变动数量必须为正数",
+                "SELECT * FROM t_inventory_log WHERE (变动类型='入库' AND 变动数量<0) "
+                        + "OR (变动类型='出库' AND 变动数量<0)",
+                Optional.of("{\"templateCode\":\"ROW_EXPRESSION\","
+                        + "\"templateParams\":{\"tableName\":\"t_inventory_log\","
+                        + "\"conditions\":["
+                        + "{\"left\":{\"field\":\"变动数量\"},\"operator\":\">\",\"right\":{\"literal\":0},"
+                        + "\"when\":{\"left\":{\"field\":\"变动类型\"},\"operator\":\"==\","
+                        + "\"right\":{\"literal\":\"入库\"}}},"
+                        + "{\"left\":{\"field\":\"变动数量\"},\"operator\":\">\",\"right\":{\"literal\":0},"
+                        + "\"when\":{\"left\":{\"field\":\"变动类型\"},\"operator\":\"==\","
+                        + "\"right\":{\"literal\":\"出库\"}}}]},"
+                        + "\"confidence\":0.98,\"explanation\":\"模型推荐入库和出库数量正数校验\"}"));
+
+        AiAssistService.RuleBindingRecommendationResult result = service.recommendRuleBinding(
+                recommendationRequest("ds-1", "R016"));
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getTemplateCode()).isEqualTo("ROW_EXPRESSION");
+        assertThat(result.getTemplateParams().get("conditions")).asList().hasSize(2);
+        assertThat(result.getWarnings()).isEmpty();
+    }
+
+    @Test
     void recommendRuleBindingFallsBackWhenModelExpressionIsNotExecutable() {
         AiAssistService service = recommendationService(Optional.of("{\"templateCode\":\"FIELD_EXPRESSION\","
                 + "\"templateParams\":{\"tableName\":\"t_order\","
@@ -412,7 +740,7 @@ class AiAssistServiceTest {
         assertThat(result.isGeneratedByAi()).isFalse();
         assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
         assertThat(result.getTemplateCode()).isEqualTo("NOT_NULL");
-        assertThat(result.getConfidence()).isEqualTo("MEDIUM");
+        assertThat(result.getConfidence()).isEqualTo("HIGH");
         assertThat(result.getTemplateParams()).containsEntry("tableName", "t_order");
         assertThat(result.getTemplateParams().get("fields")).asList().contains("用户ID", "订单状态");
         assertThat(result.getWarnings()).isEmpty();
@@ -483,11 +811,67 @@ class AiAssistServiceTest {
         r006.setCategory("SINGLE_TABLE_BUSINESS_RULE");
         r006.setDescription("实付金额应等于订单金额减优惠金额，且不得大于订单金额");
         r006.setPseudoLogic("实付金额 = 订单金额 - 优惠金额 AND 实付金额 <= 订单金额");
+        RuleDefinitionEntity r004 = rule("ds-1", "R004", "优惠金额合理性校验", "");
+        r004.setCategory("SINGLE_TABLE_BUSINESS_RULE");
+        r004.setDescription("优惠金额不得超过订单金额的50%");
+        r004.setPseudoLogic("优惠金额 <= 订单金额 * 0.5");
         when(ruleRepository.findById(new RuleDefinitionEntity.Key("R002", "ds-1"))).thenReturn(Optional.of(rule));
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("R004", "ds-1"))).thenReturn(Optional.of(r004));
         when(ruleRepository.findById(new RuleDefinitionEntity.Key("R006", "ds-1"))).thenReturn(Optional.of(r006));
         when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
                 table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "下单时间",
                         "收货地址", "订单金额", "优惠金额", "实付金额")));
+        return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
+                new ObjectMapper(), ruleRepository, tableRepository);
+    }
+
+    private AiAssistService orderItemRecommendationService(Optional<String> modelResponse) {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        RuleDefinitionEntity rule = rule("ds-1", "R011", "明细小计金额校验", "");
+        rule.setCategory("SINGLE_TABLE_BUSINESS_RULE");
+        rule.setApplicableTables("t_order_item");
+        rule.setDescription("小计金额应等于单价乘以数量");
+        rule.setPseudoLogic("SELECT * FROM t_order_item WHERE ABS(小计金额 - 单价 * 数量) > 0.01");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key("R011", "ds-1"))).thenReturn(Optional.of(rule));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(List.of(
+                table("ds-1", "t_order_item", "明细ID", "订单ID", "商品ID", "单价", "数量", "小计金额")));
+        return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
+                new ObjectMapper(), ruleRepository, tableRepository);
+    }
+
+    private AiAssistService orderStatusRecommendationService(String ruleId, String ruleName,
+                                                             String description, String pseudoLogic,
+                                                             Optional<String> modelResponse) {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        RuleDefinitionEntity rule = rule("ds-1", ruleId, ruleName, "");
+        rule.setCategory("SINGLE_TABLE_BUSINESS_RULE");
+        rule.setApplicableTables("t_order");
+        rule.setDescription(description);
+        rule.setPseudoLogic(pseudoLogic);
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key(ruleId, "ds-1"))).thenReturn(Optional.of(rule));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(List.of(
+                table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "下单时间", "支付时间",
+                        "订单金额", "实付金额", "优惠金额")));
+        return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
+                new ObjectMapper(), ruleRepository, tableRepository);
+    }
+
+    private AiAssistService paymentOrderRecommendationService(String ruleId, String ruleName,
+                                                              String description, String pseudoLogic,
+                                                              Optional<String> modelResponse) {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        RuleDefinitionEntity rule = rule("ds-1", ruleId, ruleName, "");
+        rule.setCategory("CROSS_TABLE_BUSINESS_RULE");
+        rule.setDescription(description);
+        rule.setPseudoLogic(pseudoLogic);
+        rule.setApplicableTables("t_payment,t_order");
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key(ruleId, "ds-1"))).thenReturn(Optional.of(rule));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_payment", "支付ID", "订单ID", "用户ID", "支付状态", "支付金额", "退款金额"),
+                table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "订单金额", "实付金额")));
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
                 new ObjectMapper(), ruleRepository, tableRepository);
     }
@@ -501,27 +885,54 @@ class AiAssistServiceTest {
         rule.setCategory("CROSS_TABLE_BUSINESS_RULE");
         rule.setDescription(description);
         rule.setPseudoLogic(pseudoLogic);
-        rule.setApplicableTables("t_order_item,t_product,t_payment,t_order");
+        rule.setApplicableTables("t_order_item,t_product,t_payment,t_order,t_inventory_log");
         when(ruleRepository.findById(new RuleDefinitionEntity.Key(ruleId, "ds-1"))).thenReturn(Optional.of(rule));
         when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
-                table("ds-1", "t_order_item", "明细ID", "订单ID", "商品ID", "小计金额"),
+                table("ds-1", "t_order_item", "明细ID", "订单ID", "商品ID", "数量", "小计金额"),
                 table("ds-1", "t_product", "商品ID", "商品名称"),
                 table("ds-1", "t_payment", "支付ID", "订单ID", "用户ID", "支付状态", "支付金额"),
-                table("ds-1", "t_order", "订单ID", "用户ID", "订单金额")));
+                table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "订单金额", "实付金额"),
+                table("ds-1", "t_inventory_log", "流水ID", "关联订单ID", "商品ID", "变动类型", "变动数量")));
+        return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
+                new ObjectMapper(), ruleRepository, tableRepository);
+    }
+
+    private AiAssistService productRecommendationService(String ruleId, String ruleName,
+                                                         String description, String pseudoLogic,
+                                                         Optional<String> modelResponse) {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        RuleDefinitionEntity rule = rule("ds-1", ruleId, ruleName, "");
+        rule.setCategory("SINGLE_TABLE_BUSINESS_RULE");
+        rule.setApplicableTables("t_product");
+        rule.setDescription(description);
+        rule.setPseudoLogic(pseudoLogic);
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key(ruleId, "ds-1"))).thenReturn(Optional.of(rule));
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
+                table("ds-1", "t_product", "商品ID", "商品名称", "商品分类", "成本价", "售价", "库存数量", "上架状态")));
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
                 new ObjectMapper(), ruleRepository, tableRepository);
     }
 
     private AiAssistService inventoryRecommendationService(Optional<String> modelResponse) {
+        return inventoryRecommendationService("R015", "库存变动连续性校验",
+                "变动后库存 = 变动前库存 + 变动数量(入库为正/出库为负)",
+                "SELECT * FROM t_inventory_log WHERE 变动后库存 != 变动前库存 + "
+                        + "CASE WHEN 变动类型='入库' THEN 变动数量 ELSE -变动数量 END",
+                modelResponse);
+    }
+
+    private AiAssistService inventoryRecommendationService(String ruleId, String ruleName,
+                                                           String description, String pseudoLogic,
+                                                           Optional<String> modelResponse) {
         RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
         DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
-        RuleDefinitionEntity rule = rule("ds-1", "R015", "库存变动连续性校验", "");
+        RuleDefinitionEntity rule = rule("ds-1", ruleId, ruleName, "");
         rule.setCategory("SINGLE_TABLE_BUSINESS_RULE");
         rule.setApplicableTables("t_inventory_log");
-        rule.setDescription("变动后库存 = 变动前库存 + 变动数量(入库为正/出库为负)");
-        rule.setPseudoLogic("SELECT * FROM t_inventory_log WHERE 变动后库存 != 变动前库存 + "
-                + "CASE WHEN 变动类型='入库' THEN 变动数量 ELSE -变动数量 END");
-        when(ruleRepository.findById(new RuleDefinitionEntity.Key("R015", "ds-1"))).thenReturn(Optional.of(rule));
+        rule.setDescription(description);
+        rule.setPseudoLogic(pseudoLogic);
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key(ruleId, "ds-1"))).thenReturn(Optional.of(rule));
         when(tableRepository.findByDatasetId("ds-1")).thenReturn(Arrays.asList(
                 table("ds-1", "t_inventory_log", "流水ID", "变动类型", "变动数量", "变动前库存", "变动后库存")));
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,

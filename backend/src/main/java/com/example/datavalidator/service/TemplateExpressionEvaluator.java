@@ -208,7 +208,11 @@ class TemplateExpressionEvaluator {
         }
 
         String getActualSummary() {
-            return leftField + "=" + leftValue + "；" + rightExpression + "=" + rightValue;
+            return leftField + "=" + leftValue;
+        }
+
+        String getExpectedSummary() {
+            return rightExpression + "=" + rightValue;
         }
 
         String getFailedCondition() {
