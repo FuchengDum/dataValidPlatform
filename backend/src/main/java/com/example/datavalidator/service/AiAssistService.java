@@ -3,10 +3,16 @@ package com.example.datavalidator.service;
 import com.example.datavalidator.exception.BadRequestException;
 import com.example.datavalidator.persistence.DataTableSnapshotEntity;
 import com.example.datavalidator.persistence.FindingEvidenceEntity;
+import com.example.datavalidator.persistence.RuleBindingEntity;
 import com.example.datavalidator.persistence.RuleDefinitionEntity;
+import com.example.datavalidator.persistence.ValidationJobEntity;
 import com.example.datavalidator.persistence.ValidationFindingEntity;
 import com.example.datavalidator.repository.DataTableSnapshotRepository;
+import com.example.datavalidator.repository.FindingEvidenceRepository;
+import com.example.datavalidator.repository.RuleBindingRepository;
 import com.example.datavalidator.repository.RuleDefinitionRepository;
+import com.example.datavalidator.repository.ValidationFindingRepository;
+import com.example.datavalidator.repository.ValidationJobRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +39,7 @@ public class AiAssistService {
             "(?i)\\b(update|delete|insert|drop|alter|truncate|merge|create|call|exec|execute|replace|grant|revoke)\\b");
     private static final Pattern SELECT_PREFIX_PATTERN = Pattern.compile("(?is)^\\s*select\\b.*");
     private static final Pattern SQL_COMMENT_PATTERN = Pattern.compile("(?s)(--|/\\*|\\*/)");
+    private static final Pattern QUOTED_IDENTIFIER_PATTERN = Pattern.compile("\"([^\"]+)\"");
     private static final String SOURCE_LOCAL = "LOCAL_RULE_BASED";
     private static final String SOURCE_AI = "OPENAI_COMPATIBLE";
     private static final List<String> SUPPORTED_RECOMMENDATION_TEMPLATES = Arrays.asList(
@@ -44,17 +51,36 @@ public class AiAssistService {
     private final ObjectMapper objectMapper;
     private final RuleDefinitionRepository ruleRepository;
     private final DataTableSnapshotRepository tableRepository;
+    private final ValidationFindingRepository findingRepository;
+    private final ValidationJobRepository jobRepository;
+    private final FindingEvidenceRepository evidenceRepository;
+    private final RuleBindingRepository bindingRepository;
     private final RuleTemplateSemanticMapper semanticMapper = new RuleTemplateSemanticMapper();
 
     @Autowired
     public AiAssistService(AiChatClient aiChatClient,
                            ObjectMapper objectMapper,
                            RuleDefinitionRepository ruleRepository,
-                           DataTableSnapshotRepository tableRepository) {
+                           DataTableSnapshotRepository tableRepository,
+                           ValidationFindingRepository findingRepository,
+                           ValidationJobRepository jobRepository,
+                           FindingEvidenceRepository evidenceRepository,
+                           RuleBindingRepository bindingRepository) {
         this.aiChatClient = aiChatClient;
         this.objectMapper = objectMapper;
         this.ruleRepository = ruleRepository;
         this.tableRepository = tableRepository;
+        this.findingRepository = findingRepository;
+        this.jobRepository = jobRepository;
+        this.evidenceRepository = evidenceRepository;
+        this.bindingRepository = bindingRepository;
+    }
+
+    public AiAssistService(AiChatClient aiChatClient,
+                           ObjectMapper objectMapper,
+                           RuleDefinitionRepository ruleRepository,
+                           DataTableSnapshotRepository tableRepository) {
+        this(aiChatClient, objectMapper, ruleRepository, tableRepository, null, null, null, null);
     }
 
     public AiAssistService(AiChatClient aiChatClient, ObjectMapper objectMapper) {
@@ -71,6 +97,27 @@ public class AiAssistService {
 
     public SqlDraftResult draftValidationSql(SqlDraftRequest request) {
         rejectDangerousIntent(request.getUserIntent());
+        if (!isBlank(request.getFindingId())) {
+            SqlDraftContext context = loadSqlDraftContext(request.getFindingId());
+            SqlDraftResult local = localSqlDraft(request, context);
+            Optional<String> modelResponse = aiChatClient.complete(sqlSystemPrompt(), sqlUserPrompt(request, context));
+            if (modelResponse.isEmpty()) {
+                return local;
+            }
+            Optional<String> sql = extractSql(modelResponse.get()).map(this::normalizeSqlDraft);
+            if (sql.isPresent() && isReadonlySelect(sql.get()) && usesKnownIdentifiers(sql.get(), context.resolver)) {
+                SqlDraftResult result = new SqlDraftResult();
+                result.setSql(sql.get());
+                result.setExecutable(false);
+                result.setSource(SOURCE_AI);
+                result.setGeneratedByAi(true);
+                result.setDraftType(normalizeDraftType(request.getDraftType()));
+                result.getWarnings().add("SQL 草案仅用于人工核查");
+                return result;
+            }
+            local.getWarnings().add("模型返回 SQL 未通过只读安全校验，已降级为本地 SQL 草案");
+            return local;
+        }
         requireText(request.getTableName(), "tableName");
         requireText(request.getFieldName(), "fieldName");
         SqlDraftResult local = localSqlDraft(request);
@@ -147,6 +194,535 @@ public class AiAssistService {
             result.getWarnings().add("记录主键 " + request.getRecordKey() + " 可作为人工复核线索。");
         }
         return result;
+    }
+
+    private SqlDraftResult localSqlDraft(SqlDraftRequest request, SqlDraftContext context) {
+        String draftType = normalizeDraftType(request.getDraftType());
+        String sql = "MANUAL_REVIEW".equals(draftType)
+                ? manualReviewSql(context)
+                : validationCheckSql(context);
+        SqlDraftResult result = new SqlDraftResult();
+        result.setExecutable(false);
+        result.setSource(SOURCE_LOCAL);
+        result.setGeneratedByAi(false);
+        result.setDraftType(draftType);
+        result.setSql(sql);
+        result.getWarnings().add("SQL 草案仅用于人工核查");
+        if (!isBlank(context.finding.getRecordKey())) {
+            result.getWarnings().add("记录主键 " + context.finding.getRecordKey() + " 可作为人工复核线索。");
+        }
+        return result;
+    }
+
+    private SqlDraftContext loadSqlDraftContext(String findingId) {
+        requireSqlDraftRepositories();
+        ValidationFindingEntity finding = findingRepository.findById(findingId)
+                .orElseThrow(() -> new BadRequestException("异常不存在: " + findingId));
+        ValidationJobEntity job = jobRepository.findById(finding.getJobId())
+                .orElseThrow(() -> new BadRequestException("校验任务不存在: " + finding.getJobId()));
+        RuleDefinitionEntity rule = ruleRepository.findById(
+                        new RuleDefinitionEntity.Key(finding.getRuleId(), job.getDatasetId()))
+                .orElse(null);
+        RuleBindingEntity binding = bindingRepository
+                .findByDatasetIdAndRuleId(job.getDatasetId(), finding.getRuleId())
+                .orElse(null);
+        List<FindingEvidenceEntity> evidences = evidenceRepository.findByFindingId(findingId);
+        Map<String, List<String>> tableFields = loadTableFields(job.getDatasetId());
+        return new SqlDraftContext(finding, job, rule, binding, evidences, tableFields);
+    }
+
+    private void requireSqlDraftRepositories() {
+        if (findingRepository == null || jobRepository == null || evidenceRepository == null
+                || bindingRepository == null || ruleRepository == null || tableRepository == null) {
+            throw new IllegalStateException("SQL 草案上下文依赖未初始化");
+        }
+    }
+
+    private String validationCheckSql(SqlDraftContext context) {
+        ValidationFindingEntity finding = context.finding;
+        String tableName = !isBlank(finding.getTableName()) ? finding.getTableName() : tableNameFromBinding(context);
+        Map<String, Object> params = templateParams(context);
+        String templateCode = context.binding == null ? "" : context.binding.getTemplateCode();
+        if ("EXISTS_IN_TABLE".equals(templateCode)) {
+            return existsInTableSql(context.resolver, params);
+        }
+        if ("RELATION_EXISTS".equals(templateCode)) {
+            return relationExistsSql(context.resolver, params);
+        }
+        if ("FIELD_EQUALS".equals(templateCode)) {
+            return fieldEqualsSql(context.resolver, params);
+        }
+        if ("JOIN_ASSERT".equals(templateCode)) {
+            return joinAssertSql(context.resolver, params);
+        }
+        if ("AGGREGATION_EQUALS".equals(templateCode)) {
+            return aggregationEqualsSql(context.resolver, params);
+        }
+        if ("AGGREGATE_ASSERT".equals(templateCode)) {
+            return aggregateAssertSql(context.resolver, params);
+        }
+        if ("DUPLICATE_CHECK".equals(templateCode)) {
+            return duplicateCheckSql(context.resolver, params);
+        }
+        if ("DUPLICATE_ASSERT".equals(templateCode)) {
+            return duplicateAssertSql(context.resolver, params);
+        }
+        if (isR006AmountRelation(context)) {
+            return "SELECT *\nFROM " + context.resolver.table(tableName)
+                    + "\nWHERE (" + context.resolver.field("实付金额") + " <> "
+                    + context.resolver.field("订单金额") + " - " + context.resolver.field("优惠金额")
+                    + "\n   OR " + context.resolver.field("实付金额") + " > "
+                    + context.resolver.field("订单金额") + ")";
+        }
+        return "SELECT *\nFROM " + context.resolver.table(tableName)
+                + "\nWHERE " + conditionFor(finding.getFieldName(), finding.getExpectedValue());
+    }
+
+    private Map<String, Object> templateParams(SqlDraftContext context) {
+        if (context.binding == null || isBlank(context.binding.getTemplateParamsJson())) {
+            return Collections.emptyMap();
+        }
+        try {
+            return objectMapper.readValue(context.binding.getTemplateParamsJson(),
+                    new TypeReference<Map<String, Object>>() {});
+        } catch (Exception ex) {
+            return Collections.emptyMap();
+        }
+    }
+
+    private String existsInTableSql(SqlIdentifierResolver resolver, Map<String, Object> params) {
+        String source = objectString(params.get("source"));
+        String target = objectString(params.get("target"));
+        String key = objectString(params.get("key"));
+        return "SELECT s.*\nFROM " + resolver.table(source) + " s\nWHERE NOT EXISTS (\n"
+                + "  SELECT 1\n  FROM " + resolver.table(target) + " t\n"
+                + "  WHERE " + aliasField("t", key) + " = " + aliasField("s", key) + "\n)";
+    }
+
+    private String relationExistsSql(SqlIdentifierResolver resolver, Map<String, Object> params) {
+        String source = objectString(params.get("source"));
+        String target = objectString(params.get("target"));
+        String existsOperator = Boolean.FALSE.equals(params.get("expectExists")) ? "EXISTS" : "NOT EXISTS";
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT s.*\nFROM ").append(resolver.table(source)).append(" s\nWHERE ");
+        String sourceWhere = predicateSql(params.get("sourceWhere"), "s");
+        if (!isBlank(sourceWhere)) {
+            sql.append(sourceWhere).append("\n  AND ");
+        }
+        sql.append(existsOperator).append(" (\n")
+                .append("  SELECT 1\n  FROM ").append(resolver.table(target)).append(" t\n")
+                .append("  WHERE ").append(relationJoinCondition(params.get("keys"), "s", "t"));
+        String targetWhere = predicateSql(params.get("targetWhere"), "t");
+        if (!isBlank(targetWhere)) {
+            sql.append("\n    AND ").append(targetWhere);
+        }
+        sql.append("\n)");
+        return sql.toString();
+    }
+
+    private String fieldEqualsSql(SqlIdentifierResolver resolver, Map<String, Object> params) {
+        String source = objectString(params.get("source"));
+        String target = objectString(params.get("target"));
+        String key = objectString(params.get("key"));
+        String sourceField = objectString(params.get("sourceField"));
+        String targetField = objectString(params.get("targetField"));
+        return "SELECT s.*, t.*\nFROM " + resolver.table(source) + " s\nJOIN " + resolver.table(target) + " t\n"
+                + "  ON " + aliasField("s", key) + " = " + aliasField("t", key) + "\n"
+                + "WHERE " + aliasField("s", sourceField) + " <> " + aliasField("t", targetField);
+    }
+
+    private String joinAssertSql(SqlIdentifierResolver resolver, Map<String, Object> params) {
+        String source = objectString(params.get("source"));
+        String target = objectString(params.get("target"));
+        Map<String, Object> assertion = objectMap(params.get("assert"));
+        String left = joinExpressionSql(assertion.get("left"), "s", "t");
+        String right = joinExpressionSql(assertion.get("right"), "s", "t");
+        String op = objectString(assertion.get("op"));
+        if (isBlank(op)) {
+            op = objectString(assertion.get("operator"));
+        }
+        String tolerance = objectString(assertion.get("tolerance"));
+        String mismatch = "==".equals(op) && !isBlank(tolerance)
+                ? "ABS(" + left + " - " + right + ") > " + tolerance
+                : "NOT (" + left + " " + sqlOperator(op) + " " + right + ")";
+        return "SELECT s.*, t.*\nFROM " + resolver.table(source) + " s\nJOIN " + resolver.table(target) + " t\n"
+                + "  ON " + relationJoinConditionSourceFirst(params.get("keys"), "s", "t") + "\n"
+                + "WHERE " + mismatch;
+    }
+
+    private String aggregationEqualsSql(SqlIdentifierResolver resolver, Map<String, Object> params) {
+        String source = objectString(params.get("source"));
+        String target = objectString(params.get("target"));
+        String groupBy = objectString(params.get("groupBy"));
+        String targetKey = objectString(params.get("targetKey"));
+        if (isBlank(targetKey)) {
+            targetKey = groupBy;
+        }
+        String sum = objectString(params.get("sum"));
+        String targetField = objectString(params.get("targetField"));
+        return "SELECT s." + resolver.field(groupBy) + ", SUM(s." + resolver.field(sum) + ") AS source_total, "
+                + "t." + resolver.field(targetField) + " AS target_total\n"
+                + "FROM " + resolver.table(source) + " s\nJOIN " + resolver.table(target) + " t\n"
+                + "  ON s." + resolver.field(groupBy) + " = t." + resolver.field(targetKey) + "\n"
+                + "GROUP BY s." + resolver.field(groupBy) + ", t." + resolver.field(targetField) + "\n"
+                + "HAVING SUM(s." + resolver.field(sum) + ") <> t." + resolver.field(targetField);
+    }
+
+    private String aggregateAssertSql(SqlIdentifierResolver resolver, Map<String, Object> params) {
+        String source = objectString(params.get("source"));
+        String target = objectString(params.get("target"));
+        RelationKey firstKey = firstRelationKey(params.get("groupBy"));
+        Map<String, Object> aggregate = objectMap(params.get("aggregate"));
+        Map<String, Object> assertion = objectMap(params.get("assert"));
+        String sourceAggregate = aggregateSql(aggregate, "s");
+        String tolerance = objectString(assertion.get("tolerance"));
+        String targetField = objectString(assertion.get("targetField"));
+        if (!isBlank(targetField)) {
+            String targetValue = "t." + resolver.field(targetField);
+            String diff = isBlank(tolerance)
+                    ? sourceAggregate + " <> " + targetValue
+                    : "ABS(" + sourceAggregate + " - " + targetValue + ") > " + tolerance;
+            return "SELECT s." + resolver.field(firstKey.sourceField) + ", " + sourceAggregate + " AS source_total, "
+                    + targetValue + " AS target_total\n"
+                    + "FROM " + resolver.table(source) + " s\nJOIN " + resolver.table(target) + " t\n"
+                    + "  ON s." + resolver.field(firstKey.sourceField) + " = t." + resolver.field(firstKey.targetField) + "\n"
+                    + "GROUP BY s." + resolver.field(firstKey.sourceField) + ", " + targetValue + "\n"
+                    + "HAVING " + diff;
+        }
+        return "SELECT s." + resolver.field(firstKey.sourceField) + ", " + sourceAggregate + " AS source_total\n"
+                + "FROM " + resolver.table(source) + " s\n"
+                + "GROUP BY s." + resolver.field(firstKey.sourceField);
+    }
+
+    private String duplicateCheckSql(SqlIdentifierResolver resolver, Map<String, Object> params) {
+        String table = objectString(params.get("tableName"));
+        return duplicateSql(resolver, table, params.get("groupBy"), params.get("where"), "COUNT(*) > 1");
+    }
+
+    private String duplicateAssertSql(SqlIdentifierResolver resolver, Map<String, Object> params) {
+        String table = objectString(params.get("table"));
+        if (isBlank(table)) {
+            table = objectString(params.get("tableName"));
+        }
+        String having = duplicateHaving(params.get("assert"));
+        return duplicateSql(resolver, table, params.get("groupBy"), params.get("where"), having);
+    }
+
+    private String duplicateSql(SqlIdentifierResolver resolver, String table, Object groupByRaw, Object whereRaw, String having) {
+        List<String> groupBy = stringValues(groupByRaw);
+        String groupFields = groupBy.stream().map(resolver::field).collect(java.util.stream.Collectors.joining(", "));
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT ").append(groupFields).append(", COUNT(*) AS duplicate_count\n")
+                .append("FROM ").append(resolver.table(table));
+        String where = predicateSql(whereRaw, "");
+        if (!isBlank(where)) {
+            sql.append("\nWHERE ").append(where);
+        }
+        sql.append("\nGROUP BY ").append(groupFields)
+                .append("\nHAVING ").append(having);
+        return sql.toString();
+    }
+
+    private String duplicateHaving(Object rawAssert) {
+        Map<String, Object> assertion = objectMap(rawAssert);
+        String op = objectString(assertion.get("op"));
+        String count = objectString(assertion.get("count"));
+        if (count.contains("<=")) {
+            return "COUNT(*) > " + count.replace("<=", "").trim();
+        }
+        if ("<=".equals(op)) {
+            return "COUNT(*) > " + count;
+        }
+        if ("<".equals(op)) {
+            return "COUNT(*) >= " + count;
+        }
+        if (">=".equals(op)) {
+            return "COUNT(*) < " + count;
+        }
+        if (">".equals(op)) {
+            return "COUNT(*) <= " + count;
+        }
+        return "COUNT(*) <> " + count;
+    }
+
+    private String manualReviewSql(SqlDraftContext context) {
+        ValidationFindingEntity finding = context.finding;
+        String tableName = !isBlank(finding.getTableName()) ? finding.getTableName() : tableNameFromBinding(context);
+        List<String> fields = reviewFields(context);
+        String selectFields = String.join(", ", fields.stream()
+                .map(context.resolver::field)
+                .collect(java.util.stream.Collectors.toList()));
+        return "SELECT " + selectFields
+                + "\nFROM " + context.resolver.table(tableName)
+                + "\nWHERE " + context.resolver.field(primaryKeyFor(tableName)) + " = '"
+                + escapeSqlLiteral(finding.getRecordKey()) + "'";
+    }
+
+    private List<String> reviewFields(SqlDraftContext context) {
+        if (isR006AmountRelation(context)) {
+            return Arrays.asList("订单ID", "订单金额", "优惠金额", "实付金额");
+        }
+        List<String> fields = new ArrayList<>();
+        fields.add(primaryKeyFor(context.finding.getTableName()));
+        if (!isBlank(context.finding.getFieldName())) {
+            fields.add(context.finding.getFieldName());
+        }
+        return fields;
+    }
+
+    private boolean isR006AmountRelation(SqlDraftContext context) {
+        String text = safe(context.finding.getRuleId()) + " " + safe(context.finding.getRuleName()) + " "
+                + safe(context.finding.getDescription()) + " "
+                + (context.rule == null ? "" : safe(context.rule.getDescription()) + " " + safe(context.rule.getPseudoLogic()))
+                + " " + (context.binding == null ? "" : safe(context.binding.getTemplateCode()));
+        return text.contains("R006")
+                || (text.contains("实付金额") && text.contains("订单金额") && text.contains("优惠金额"));
+    }
+
+    private String tableNameFromBinding(SqlDraftContext context) {
+        if (context.binding != null && !isBlank(context.binding.getTemplateParamsJson())) {
+            try {
+                Map<String, Object> params = objectMapper.readValue(context.binding.getTemplateParamsJson(),
+                        new TypeReference<Map<String, Object>>() {});
+                String tableName = objectString(params.get("tableName"));
+                if (!isBlank(tableName)) {
+                    return tableName;
+                }
+            } catch (Exception ignored) {
+                // Fall back to finding table below.
+            }
+        }
+        return context.finding.getTableName();
+    }
+
+    private String primaryKeyFor(String tableName) {
+        if ("t_order".equals(tableName)) {
+            return "订单ID";
+        }
+        if ("t_order_item".equals(tableName)) {
+            return "明细ID";
+        }
+        if ("t_product".equals(tableName)) {
+            return "商品ID";
+        }
+        if ("t_payment".equals(tableName)) {
+            return "支付ID";
+        }
+        if ("t_inventory_log".equals(tableName)) {
+            return "流水ID";
+        }
+        return "ID";
+    }
+
+    private String escapeSqlLiteral(String value) {
+        return value == null ? "" : value.replace("'", "''");
+    }
+
+    private String normalizeSqlDraft(String sql) {
+        String normalized = sql == null ? "" : sql.trim();
+        if (normalized.endsWith(";") && normalized.indexOf(';') == normalized.length() - 1) {
+            return normalized.substring(0, normalized.length() - 1).trim();
+        }
+        return normalized;
+    }
+
+    private boolean usesKnownIdentifiers(String sql, SqlIdentifierResolver resolver) {
+        java.util.regex.Matcher matcher = QUOTED_IDENTIFIER_PATTERN.matcher(sql);
+        while (matcher.find()) {
+            if (!resolver.isKnownIdentifier(matcher.group(1))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String relationJoinCondition(Object rawKeys, String sourceAlias, String targetAlias) {
+        List<String> items = new ArrayList<>();
+        if (rawKeys instanceof List) {
+            for (Object item : (List<?>) rawKeys) {
+                Map<String, Object> key = objectMap(item);
+                items.add(aliasField(targetAlias, objectString(key.get("targetField")))
+                        + " = " + aliasField(sourceAlias, objectString(key.get("sourceField"))));
+            }
+        }
+        return items.isEmpty() ? "1 = 1" : String.join(" AND ", items);
+    }
+
+    private String relationJoinConditionSourceFirst(Object rawKeys, String sourceAlias, String targetAlias) {
+        List<String> items = new ArrayList<>();
+        if (rawKeys instanceof List) {
+            for (Object item : (List<?>) rawKeys) {
+                Map<String, Object> key = objectMap(item);
+                items.add(aliasField(sourceAlias, objectString(key.get("sourceField")))
+                        + " = " + aliasField(targetAlias, objectString(key.get("targetField"))));
+            }
+        }
+        return items.isEmpty() ? "1 = 1" : String.join(" AND ", items);
+    }
+
+    private RelationKey firstRelationKey(Object rawKeys) {
+        if (rawKeys instanceof List && !((List<?>) rawKeys).isEmpty()) {
+            Map<String, Object> key = objectMap(((List<?>) rawKeys).get(0));
+            return new RelationKey(objectString(key.get("sourceField")), objectString(key.get("targetField")));
+        }
+        String field = objectString(rawKeys);
+        return new RelationKey(field, field);
+    }
+
+    @SuppressWarnings("unchecked")
+    private String predicateSql(Object rawPredicate, String alias) {
+        if (rawPredicate == null) {
+            return "";
+        }
+        if (rawPredicate instanceof List) {
+            List<String> parts = new ArrayList<>();
+            for (Object item : (List<?>) rawPredicate) {
+                String part = predicateSql(item, alias);
+                if (!isBlank(part)) {
+                    parts.add(part);
+                }
+            }
+            return String.join(" AND ", parts);
+        }
+        if (!(rawPredicate instanceof Map)) {
+            return "";
+        }
+        Map<String, Object> predicate = objectMap(rawPredicate);
+        if (predicate.get("and") instanceof List) {
+            List<String> parts = new ArrayList<>();
+            for (Object item : (List<Object>) predicate.get("and")) {
+                parts.add(predicateSql(item, alias));
+            }
+            return "(" + String.join(" AND ", parts) + ")";
+        }
+        if (predicate.get("or") instanceof List) {
+            List<String> parts = new ArrayList<>();
+            for (Object item : (List<Object>) predicate.get("or")) {
+                parts.add(predicateSql(item, alias));
+            }
+            return "(" + String.join(" OR ", parts) + ")";
+        }
+        String field = nodeField(predicate.get("left"));
+        String operator = objectString(predicate.get("operator"));
+        if (isBlank(operator)) {
+            operator = objectString(predicate.get("op"));
+        }
+        Object right = predicate.get("right");
+        if ("in".equals(operator) || "notIn".equals(operator)) {
+            Object values = right instanceof Map ? ((Map<?, ?>) right).get("literal") : right;
+            List<String> literals = new ArrayList<>();
+            if (values instanceof List) {
+                for (Object value : (List<?>) values) {
+                    literals.add(literalSql(value));
+                }
+            }
+            return aliasField(alias, field) + ("notIn".equals(operator) ? " NOT IN " : " IN ")
+                    + "(" + String.join(", ", literals) + ")";
+        }
+        if ("isNull".equals(operator)) {
+            return aliasField(alias, field) + " IS NULL";
+        }
+        if ("isNotNull".equals(operator)) {
+            return aliasField(alias, field) + " IS NOT NULL";
+        }
+        return aliasField(alias, field) + " " + sqlOperator(operator) + " " + nodeValueSql(right, alias);
+    }
+
+    private String joinExpressionSql(Object rawNode, String sourceAlias, String targetAlias) {
+        Map<String, Object> node = objectMap(rawNode);
+        String sourceField = objectString(node.get("sourceField"));
+        if (!isBlank(sourceField)) {
+            return aliasField(sourceAlias, sourceField);
+        }
+        String targetField = objectString(node.get("targetField"));
+        if (!isBlank(targetField)) {
+            return aliasField(targetAlias, targetField);
+        }
+        String field = objectString(node.get("field"));
+        if (!isBlank(field)) {
+            return aliasField(sourceAlias, field);
+        }
+        if (node.containsKey("literal")) {
+            return literalSql(node.get("literal"));
+        }
+        if (node.containsKey("value")) {
+            return literalSql(node.get("value"));
+        }
+        String op = objectString(node.get("op"));
+        if (!isBlank(op)) {
+            return "(" + joinExpressionSql(node.get("left"), sourceAlias, targetAlias)
+                    + " " + op + " "
+                    + joinExpressionSql(node.get("right"), sourceAlias, targetAlias) + ")";
+        }
+        return "NULL";
+    }
+
+    private String aggregateSql(Map<String, Object> aggregate, String alias) {
+        String fn = objectString(aggregate.get("fn")).toUpperCase(Locale.ROOT);
+        if (isBlank(fn)) {
+            fn = "SUM";
+        }
+        if ("COUNT".equals(fn)) {
+            return "COUNT(*)";
+        }
+        return fn + "(" + aliasField(alias, objectString(aggregate.get("field"))) + ")";
+    }
+
+    private String nodeField(Object rawNode) {
+        Map<String, Object> node = objectMap(rawNode);
+        String field = objectString(node.get("field"));
+        if (!isBlank(field)) {
+            return field;
+        }
+        String sourceField = objectString(node.get("sourceField"));
+        if (!isBlank(sourceField)) {
+            return sourceField;
+        }
+        return objectString(node.get("targetField"));
+    }
+
+    private String nodeValueSql(Object rawNode, String alias) {
+        if (rawNode instanceof List) {
+            return ((List<?>) rawNode).stream().map(this::literalSql)
+                    .collect(java.util.stream.Collectors.joining(", ", "(", ")"));
+        }
+        Map<String, Object> node = objectMap(rawNode);
+        String field = objectString(node.get("field"));
+        if (!isBlank(field)) {
+            return aliasField(alias, field);
+        }
+        if (node.containsKey("literal")) {
+            return literalSql(node.get("literal"));
+        }
+        if (node.containsKey("value")) {
+            return literalSql(node.get("value"));
+        }
+        return literalSql(rawNode);
+    }
+
+    private String aliasField(String alias, String field) {
+        String quoted = quoteIdentifier(field);
+        return isBlank(alias) ? quoted : alias + "." + quoted;
+    }
+
+    private String literalSql(Object value) {
+        if (value == null) {
+            return "NULL";
+        }
+        if (value instanceof Number || value instanceof Boolean) {
+            return value.toString();
+        }
+        return "'" + escapeSqlLiteral(value.toString()) + "'";
+    }
+
+    private String sqlOperator(String operator) {
+        if ("==".equals(operator)) {
+            return "=";
+        }
+        if ("!=".equals(operator)) {
+            return "<>";
+        }
+        return isBlank(operator) ? "=" : operator;
     }
 
     private RuleBindingRecommendationResult localRecommendation(RuleTemplateSemanticMatch match) {
@@ -427,7 +1003,8 @@ public class AiAssistService {
     private String sqlSystemPrompt() {
         return "你是业务数据核查 SQL 助手。只允许输出 JSON，字段为 sql。"
                 + "sql 必须是只读 SELECT 查询，禁止 UPDATE、DELETE、INSERT、DROP、ALTER、TRUNCATE、MERGE、CREATE，"
-                + "不要输出修复 SQL，不要解释。";
+                + "只能使用用户提供的 availableTables 中的表名和字段名。"
+                + "不要输出修复 SQL，不要解释，不要输出分号。";
     }
 
     private String recommendationSystemPrompt() {
@@ -467,6 +1044,26 @@ public class AiAssistService {
         payload.put("actualValue", request.getActualValue());
         payload.put("expectedValue", request.getExpectedValue());
         payload.put("recordKey", request.getRecordKey());
+        payload.put("userIntent", request.getUserIntent());
+        return writeJson(payload);
+    }
+
+    private String sqlUserPrompt(SqlDraftRequest request, SqlDraftContext context) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("draftType", normalizeDraftType(request.getDraftType()));
+        payload.put("findingId", context.finding.getFindingId());
+        payload.put("ruleId", context.finding.getRuleId());
+        payload.put("ruleName", context.finding.getRuleName());
+        payload.put("ruleDescription", context.rule == null ? context.finding.getDescription() : context.rule.getDescription());
+        payload.put("pseudoLogic", context.rule == null ? "" : context.rule.getPseudoLogic());
+        payload.put("tableName", context.finding.getTableName());
+        payload.put("fieldName", context.finding.getFieldName());
+        payload.put("actualValue", context.finding.getActualValue());
+        payload.put("expectedValue", context.finding.getExpectedValue());
+        payload.put("recordKey", context.finding.getRecordKey());
+        payload.put("evidences", summarizeEvidences(context.evidences));
+        payload.put("availableTables", context.tableFields);
+        payload.put("fieldMappingPolicy", "当前 H2 演示库逻辑字段名等于物理字段名；生成 SQL 时必须引用 availableTables 中的表名和字段名。");
         payload.put("userIntent", request.getUserIntent());
         return writeJson(payload);
     }
@@ -1141,6 +1738,7 @@ public class AiAssistService {
     }
 
     public static class SqlDraftRequest {
+        private String findingId;
         private String draftType;
         private String tableName;
         private String fieldName;
@@ -1149,6 +1747,8 @@ public class AiAssistService {
         private String recordKey;
         private String userIntent;
 
+        public String getFindingId() { return findingId; }
+        public void setFindingId(String findingId) { this.findingId = findingId; }
         public String getDraftType() { return draftType; }
         public void setDraftType(String draftType) { this.draftType = draftType; }
         public String getTableName() { return tableName; }
@@ -1240,6 +1840,41 @@ public class AiAssistService {
 
         static RecommendationParseResult failure(String failureReason) {
             return new RecommendationParseResult(Optional.empty(), failureReason);
+        }
+    }
+
+    private static class SqlDraftContext {
+        private final ValidationFindingEntity finding;
+        private final ValidationJobEntity job;
+        private final RuleDefinitionEntity rule;
+        private final RuleBindingEntity binding;
+        private final List<FindingEvidenceEntity> evidences;
+        private final Map<String, List<String>> tableFields;
+        private final SqlIdentifierResolver resolver;
+
+        SqlDraftContext(ValidationFindingEntity finding,
+                        ValidationJobEntity job,
+                        RuleDefinitionEntity rule,
+                        RuleBindingEntity binding,
+                        List<FindingEvidenceEntity> evidences,
+                        Map<String, List<String>> tableFields) {
+            this.finding = finding;
+            this.job = job;
+            this.rule = rule;
+            this.binding = binding;
+            this.evidences = evidences == null ? Collections.emptyList() : evidences;
+            this.tableFields = tableFields == null ? Collections.emptyMap() : tableFields;
+            this.resolver = new SqlIdentifierResolver(this.tableFields);
+        }
+    }
+
+    private static class RelationKey {
+        private final String sourceField;
+        private final String targetField;
+
+        RelationKey(String sourceField, String targetField) {
+            this.sourceField = sourceField;
+            this.targetField = targetField;
         }
     }
 }

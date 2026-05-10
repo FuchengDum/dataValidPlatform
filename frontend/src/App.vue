@@ -642,6 +642,7 @@ async function loadSqlDraft(draftType) {
   if (!detail.value) return
   const finding = detail.value.finding
   const result = await run(() => draftValidationSql({
+    findingId: finding.findingId,
     draftType,
     tableName: finding.tableName,
     fieldName: finding.fieldName,

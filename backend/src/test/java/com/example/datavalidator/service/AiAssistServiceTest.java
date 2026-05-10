@@ -2,10 +2,16 @@ package com.example.datavalidator.service;
 
 import com.example.datavalidator.persistence.FindingEvidenceEntity;
 import com.example.datavalidator.persistence.DataTableSnapshotEntity;
+import com.example.datavalidator.persistence.RuleBindingEntity;
 import com.example.datavalidator.persistence.RuleDefinitionEntity;
+import com.example.datavalidator.persistence.ValidationJobEntity;
 import com.example.datavalidator.persistence.ValidationFindingEntity;
 import com.example.datavalidator.repository.DataTableSnapshotRepository;
+import com.example.datavalidator.repository.FindingEvidenceRepository;
+import com.example.datavalidator.repository.RuleBindingRepository;
 import com.example.datavalidator.repository.RuleDefinitionRepository;
+import com.example.datavalidator.repository.ValidationFindingRepository;
+import com.example.datavalidator.repository.ValidationJobRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -123,6 +129,134 @@ class AiAssistServiceTest {
         assertThatThrownBy(() -> service.draftValidationSql(request))
                 .isInstanceOf(com.example.datavalidator.exception.BadRequestException.class)
                 .hasMessageContaining("只允许生成只读 SELECT");
+    }
+
+    @Test
+    void draftValidationSqlUsesFindingContextForR006ValidationCheck() {
+        AiAssistService service = sqlDraftContextService(Optional.empty());
+        AiAssistService.SqlDraftRequest request = new AiAssistService.SqlDraftRequest();
+        request.setFindingId("f-r006");
+        request.setDraftType("VALIDATION_CHECK");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(request);
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getSql()).contains("\"订单金额\"", "\"优惠金额\"", "\"实付金额\"");
+        assertThat(result.getSql()).contains("\"实付金额\" <> \"订单金额\" - \"优惠金额\"");
+        assertThat(result.getSql()).contains("\"实付金额\" > \"订单金额\"");
+        assertThat(result.getSql()).doesNotContain("\"实付金额\" IS NOT NULL");
+    }
+
+    @Test
+    void draftValidationSqlUsesFindingContextForManualReview() {
+        AiAssistService service = sqlDraftContextService(Optional.empty());
+        AiAssistService.SqlDraftRequest request = new AiAssistService.SqlDraftRequest();
+        request.setFindingId("f-r006");
+        request.setDraftType("MANUAL_REVIEW");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(request);
+
+        assertThat(result.getDraftType()).isEqualTo("MANUAL_REVIEW");
+        assertThat(result.getSql()).contains("SELECT", "\"订单ID\"", "\"订单金额\"", "\"优惠金额\"", "\"实付金额\"");
+        assertThat(result.getSql()).contains("WHERE \"订单ID\" = 'ORD006'");
+    }
+
+    @Test
+    void draftValidationSqlAcceptsModelSelectAfterRemovingTrailingSemicolon() {
+        AiAssistService service = sqlDraftContextService(Optional.of(
+                "{\"sql\":\"SELECT * FROM \\\"t_order\\\" WHERE \\\"订单ID\\\" = 'ORD006';\"}"));
+        AiAssistService.SqlDraftRequest request = new AiAssistService.SqlDraftRequest();
+        request.setFindingId("f-r006");
+        request.setDraftType("MANUAL_REVIEW");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(request);
+
+        assertThat(result.isGeneratedByAi()).isTrue();
+        assertThat(result.getSource()).isEqualTo("OPENAI_COMPATIBLE");
+        assertThat(result.getSql()).isEqualTo("SELECT * FROM \"t_order\" WHERE \"订单ID\" = 'ORD006'");
+    }
+
+    @Test
+    void draftValidationSqlFallsBackWhenModelUsesUnknownField() {
+        AiAssistService service = sqlDraftContextService(Optional.of(
+                "{\"sql\":\"SELECT * FROM \\\"t_order\\\" WHERE \\\"不存在字段\\\" = 'x'\"}"));
+        AiAssistService.SqlDraftRequest request = new AiAssistService.SqlDraftRequest();
+        request.setFindingId("f-r006");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(request);
+
+        assertThat(result.isGeneratedByAi()).isFalse();
+        assertThat(result.getSource()).isEqualTo("LOCAL_RULE_BASED");
+        assertThat(result.getSql()).contains("\"实付金额\" <> \"订单金额\" - \"优惠金额\"");
+        assertThat(result.getWarnings()).anyMatch(warning -> warning.contains("模型返回 SQL 未通过只读安全校验"));
+    }
+
+    @Test
+    void draftValidationSqlBuildsExistsInTableCheck() {
+        AiAssistService service = sqlDraftContextService(Optional.empty(), "f-exists", "R018", "EXISTS_IN_TABLE",
+                "{\"source\":\"t_order_item\",\"target\":\"t_product\",\"key\":\"商品ID\"}");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(sqlDraftRequest("f-exists"));
+
+        assertThat(result.getSql()).contains("NOT EXISTS", "\"t_order_item\" s", "\"t_product\" t");
+        assertThat(result.getSql()).contains("t.\"商品ID\" = s.\"商品ID\"");
+    }
+
+    @Test
+    void draftValidationSqlBuildsRelationExistsCheck() {
+        AiAssistService service = sqlDraftContextService(Optional.empty(), "f-relation", "R021", "RELATION_EXISTS",
+                "{\"source\":\"t_order\",\"target\":\"t_payment\","
+                        + "\"keys\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
+                        + "\"sourceWhere\":{\"left\":{\"field\":\"订单状态\"},\"operator\":\"in\",\"right\":[\"已支付\",\"已发货\",\"已完成\"]},"
+                        + "\"targetWhere\":{\"left\":{\"field\":\"支付状态\"},\"operator\":\"==\",\"right\":{\"literal\":\"支付成功\"}},"
+                        + "\"expectExists\":true}");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(sqlDraftRequest("f-relation"));
+
+        assertThat(result.getSql()).contains("NOT EXISTS", "s.\"订单状态\" IN ('已支付', '已发货', '已完成')");
+        assertThat(result.getSql()).contains("t.\"订单ID\" = s.\"订单ID\"", "t.\"支付状态\" = '支付成功'");
+    }
+
+    @Test
+    void draftValidationSqlBuildsJoinAssertCheck() {
+        AiAssistService service = sqlDraftContextService(Optional.empty(), "f-join", "R019", "JOIN_ASSERT",
+                "{\"source\":\"t_order_item\",\"target\":\"t_product\","
+                        + "\"keys\":[{\"sourceField\":\"商品ID\",\"targetField\":\"商品ID\"}],"
+                        + "\"assert\":{\"left\":{\"sourceField\":\"单价\"},\"op\":\"==\",\"right\":{\"targetField\":\"售价\"},\"tolerance\":0.01}}");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(sqlDraftRequest("f-join"));
+
+        assertThat(result.getSql()).contains("JOIN", "\"t_order_item\" s", "\"t_product\" t");
+        assertThat(result.getSql()).contains("s.\"商品ID\" = t.\"商品ID\"");
+        assertThat(result.getSql()).contains("ABS(s.\"单价\" - t.\"售价\") > 0.01");
+    }
+
+    @Test
+    void draftValidationSqlBuildsAggregateAssertCheck() {
+        AiAssistService service = sqlDraftContextService(Optional.empty(), "f-aggregate", "R017", "AGGREGATE_ASSERT",
+                "{\"source\":\"t_order_item\",\"target\":\"t_order\","
+                        + "\"groupBy\":[{\"sourceField\":\"订单ID\",\"targetField\":\"订单ID\"}],"
+                        + "\"aggregate\":{\"fn\":\"SUM\",\"field\":\"小计金额\"},"
+                        + "\"assert\":{\"op\":\"==\",\"targetField\":\"订单金额\",\"tolerance\":0.01}}");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(sqlDraftRequest("f-aggregate"));
+
+        assertThat(result.getSql()).contains("SUM(s.\"小计金额\")", "GROUP BY s.\"订单ID\", t.\"订单金额\"");
+        assertThat(result.getSql()).contains("ABS(SUM(s.\"小计金额\") - t.\"订单金额\") > 0.01");
+    }
+
+    @Test
+    void draftValidationSqlBuildsDuplicateAssertCheck() {
+        AiAssistService service = sqlDraftContextService(Optional.empty(), "f-duplicate", "R029", "DUPLICATE_ASSERT",
+                "{\"table\":\"t_payment\",\"groupBy\":[\"订单ID\"],"
+                        + "\"where\":{\"left\":{\"field\":\"支付状态\"},\"operator\":\"==\",\"right\":{\"literal\":\"支付成功\"}},"
+                        + "\"assert\":{\"op\":\"<=\",\"count\":1}}");
+
+        AiAssistService.SqlDraftResult result = service.draftValidationSql(sqlDraftRequest("f-duplicate"));
+
+        assertThat(result.getSql()).contains("FROM \"t_payment\"", "WHERE \"支付状态\" = '支付成功'");
+        assertThat(result.getSql()).contains("GROUP BY \"订单ID\"", "HAVING COUNT(*) > 1");
     }
 
     @Test
@@ -961,6 +1095,135 @@ class AiAssistServiceTest {
                 table("ds-1", "t_inventory_log", "流水ID", "变动类型", "变动数量", "变动前库存", "变动后库存")));
         return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
                 new ObjectMapper(), ruleRepository, tableRepository);
+    }
+
+    private AiAssistService sqlDraftContextService(Optional<String> modelResponse) {
+        return sqlDraftContextService(modelResponse, "f-r006", "R006", "ROW_EXPRESSION",
+                "{\"tableName\":\"t_order\",\"conditions\":["
+                        + "{\"left\":{\"field\":\"实付金额\"},\"operator\":\"==\",\"right\":{\"op\":\"-\",\"left\":{\"field\":\"订单金额\"},\"right\":{\"field\":\"优惠金额\"}}},"
+                        + "{\"left\":{\"field\":\"实付金额\"},\"operator\":\"<=\",\"right\":{\"field\":\"订单金额\"}}]}");
+    }
+
+    private AiAssistService sqlDraftContextService(Optional<String> modelResponse, String findingId,
+                                                   String ruleId, String templateCode, String templateParamsJson) {
+        RuleDefinitionRepository ruleRepository = mock(RuleDefinitionRepository.class);
+        DataTableSnapshotRepository tableRepository = mock(DataTableSnapshotRepository.class);
+        ValidationFindingRepository findingRepository = mock(ValidationFindingRepository.class);
+        ValidationJobRepository jobRepository = mock(ValidationJobRepository.class);
+        FindingEvidenceRepository evidenceRepository = mock(FindingEvidenceRepository.class);
+        RuleBindingRepository bindingRepository = mock(RuleBindingRepository.class);
+
+        ValidationFindingEntity finding = new ValidationFindingEntity();
+        finding.setFindingId(findingId);
+        finding.setJobId("job-1");
+        finding.setRuleId(ruleId);
+        finding.setRuleName(ruleNameFor(ruleId));
+        finding.setRuleCategory("SINGLE_TABLE_BUSINESS_RULE");
+        finding.setSeverity("CRITICAL");
+        finding.setTableName(tableForTemplate(templateCode, templateParamsJson));
+        finding.setRecordKey(recordKeyFor(ruleId));
+        finding.setFieldName(fieldForRule(ruleId));
+        finding.setActualValue("actual");
+        finding.setExpectedValue("expected");
+        finding.setDescription(ruleNameFor(ruleId));
+
+        ValidationJobEntity job = new ValidationJobEntity();
+        job.setJobId("job-1");
+        job.setDatasetId("ds-1");
+
+        RuleDefinitionEntity rule = rule("ds-1", ruleId, ruleNameFor(ruleId), "");
+        rule.setCategory("SINGLE_TABLE_BUSINESS_RULE");
+        rule.setDescription(ruleNameFor(ruleId));
+        rule.setPseudoLogic(ruleNameFor(ruleId));
+
+        RuleBindingEntity binding = new RuleBindingEntity();
+        binding.setId("bind-" + ruleId);
+        binding.setDatasetId("ds-1");
+        binding.setRuleId(ruleId);
+        binding.setExecutorType("TEMPLATE");
+        binding.setTemplateCode(templateCode);
+        binding.setTemplateParamsJson(templateParamsJson);
+
+        when(findingRepository.findById(findingId)).thenReturn(Optional.of(finding));
+        when(jobRepository.findById("job-1")).thenReturn(Optional.of(job));
+        when(ruleRepository.findById(new RuleDefinitionEntity.Key(ruleId, "ds-1"))).thenReturn(Optional.of(rule));
+        when(bindingRepository.findByDatasetIdAndRuleId("ds-1", ruleId)).thenReturn(Optional.of(binding));
+        when(evidenceRepository.findByFindingId(findingId)).thenReturn(Collections.emptyList());
+        when(tableRepository.findByDatasetId("ds-1")).thenReturn(List.of(
+                table("ds-1", "t_order", "订单ID", "用户ID", "订单状态", "订单金额", "优惠金额", "实付金额"),
+                table("ds-1", "t_order_item", "明细ID", "订单ID", "商品ID", "单价", "数量", "小计金额"),
+                table("ds-1", "t_product", "商品ID", "商品名称", "售价", "上架状态"),
+                table("ds-1", "t_payment", "支付ID", "订单ID", "用户ID", "支付状态", "支付金额", "退款金额"),
+                table("ds-1", "t_inventory_log", "流水ID", "关联订单ID", "商品ID", "变动类型", "变动数量")));
+
+        return new AiAssistService((systemPrompt, userPrompt) -> modelResponse,
+                new ObjectMapper(), ruleRepository, tableRepository,
+                findingRepository, jobRepository, evidenceRepository, bindingRepository);
+    }
+
+    private AiAssistService.SqlDraftRequest sqlDraftRequest(String findingId) {
+        AiAssistService.SqlDraftRequest request = new AiAssistService.SqlDraftRequest();
+        request.setFindingId(findingId);
+        request.setDraftType("VALIDATION_CHECK");
+        return request;
+    }
+
+    private String ruleNameFor(String ruleId) {
+        if ("R006".equals(ruleId)) {
+            return "实付金额与订单金额关系校验";
+        }
+        if ("R018".equals(ruleId)) {
+            return "订单明细商品存在性校验";
+        }
+        if ("R021".equals(ruleId)) {
+            return "订单支付状态一致性校验";
+        }
+        if ("R019".equals(ruleId)) {
+            return "订单明细商品价格一致性校验";
+        }
+        if ("R017".equals(ruleId)) {
+            return "订单金额与明细汇总一致性校验";
+        }
+        if ("R029".equals(ruleId)) {
+            return "重复支付检查";
+        }
+        return ruleId;
+    }
+
+    private String tableForTemplate(String templateCode, String paramsJson) {
+        if (paramsJson.contains("\"table\":\"t_payment\"") || paramsJson.contains("\"tableName\":\"t_payment\"")) {
+            return "t_payment";
+        }
+        if (paramsJson.contains("\"source\":\"t_order_item\"")) {
+            return "t_order_item";
+        }
+        if (paramsJson.contains("\"source\":\"t_order\"")) {
+            return "t_order";
+        }
+        return "t_order";
+    }
+
+    private String recordKeyFor(String ruleId) {
+        if ("R018".equals(ruleId) || "R019".equals(ruleId) || "R017".equals(ruleId)) {
+            return "ITM001";
+        }
+        if ("R029".equals(ruleId)) {
+            return "PAY014";
+        }
+        return "ORD006";
+    }
+
+    private String fieldForRule(String ruleId) {
+        if ("R018".equals(ruleId) || "R019".equals(ruleId)) {
+            return "商品ID";
+        }
+        if ("R017".equals(ruleId)) {
+            return "订单金额";
+        }
+        if ("R029".equals(ruleId)) {
+            return "订单ID";
+        }
+        return "实付金额";
     }
 
     private AiAssistService.RuleBindingRecommendationRequest recommendationRequest(String datasetId, String ruleId) {
