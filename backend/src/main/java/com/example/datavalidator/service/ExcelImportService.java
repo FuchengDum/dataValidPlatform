@@ -22,10 +22,22 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.OutputKeys;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -35,6 +47,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 @Service
 public class ExcelImportService {
@@ -88,7 +103,7 @@ public class ExcelImportService {
             throw new BadRequestException("仅支持 .xlsx 文件");
         }
 
-        try (InputStream inputStream = file.getInputStream(); Workbook workbook = WorkbookFactory.create(inputStream)) {
+        try (InputStream inputStream = file.getInputStream(); Workbook workbook = openWorkbook(inputStream)) {
             validateSheets(workbook);
             String datasetId = IdFactory.next("ds");
             WorkbookDataset dataset = new WorkbookDataset();
@@ -110,6 +125,69 @@ public class ExcelImportService {
         } catch (Exception ex) {
             throw new BadRequestException("Excel解析失败: " + ex.getMessage());
         }
+    }
+
+    private Workbook openWorkbook(InputStream inputStream) throws Exception {
+        byte[] workbookBytes = inputStream.readAllBytes();
+        return WorkbookFactory.create(new ByteArrayInputStream(removeNullTargetRelationships(workbookBytes)));
+    }
+
+    private byte[] removeNullTargetRelationships(byte[] workbookBytes) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        boolean hasEntries = false;
+        boolean changed = false;
+        try (ZipInputStream zipInput = new ZipInputStream(new ByteArrayInputStream(workbookBytes));
+             ZipOutputStream zipOutput = new ZipOutputStream(output)) {
+            ZipEntry entry;
+            while ((entry = zipInput.getNextEntry()) != null) {
+                hasEntries = true;
+                zipOutput.putNextEntry(new ZipEntry(entry.getName()));
+                byte[] entryBytes = zipInput.readAllBytes();
+                if (entry.getName().endsWith(".rels")) {
+                    byte[] cleanedBytes = removeNullTargetRelationshipNodes(entryBytes);
+                    changed = changed || cleanedBytes != entryBytes;
+                    entryBytes = cleanedBytes;
+                }
+                zipOutput.write(entryBytes);
+                zipOutput.closeEntry();
+            }
+        }
+        return hasEntries && changed ? output.toByteArray() : workbookBytes;
+    }
+
+    private byte[] removeNullTargetRelationshipNodes(byte[] relationshipBytes) throws Exception {
+        Document document = secureDocumentBuilderFactory().newDocumentBuilder()
+                .parse(new ByteArrayInputStream(relationshipBytes));
+        NodeList relationships = document.getElementsByTagNameNS("*", "Relationship");
+        List<Node> invalidNodes = new ArrayList<>();
+        for (int index = 0; index < relationships.getLength(); index++) {
+            Element relationship = (Element) relationships.item(index);
+            if ("NULL".equalsIgnoreCase(relationship.getAttribute("Target").trim())) {
+                invalidNodes.add(relationship);
+            }
+        }
+        if (invalidNodes.isEmpty()) {
+            return relationshipBytes;
+        }
+        for (Node node : invalidNodes) {
+            node.getParentNode().removeChild(node);
+        }
+        Transformer transformer = TransformerFactory.newInstance().newTransformer();
+        transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        transformer.transform(new DOMSource(document), new StreamResult(output));
+        return output.toByteArray();
+    }
+
+    private DocumentBuilderFactory secureDocumentBuilderFactory() throws Exception {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(true);
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        factory.setXIncludeAware(false);
+        factory.setExpandEntityReferences(false);
+        return factory;
     }
 
     public WorkbookDataset loadDataset(String datasetId) {
@@ -154,7 +232,7 @@ public class ExcelImportService {
 
     private void validateSheets(Workbook workbook) {
         List<String> required = new ArrayList<>(
-                Arrays.asList("业务规则库", "字段约束说明", "关联逻辑说明", "校验场景覆盖矩阵", "使用说明"));
+                Arrays.asList("业务规则库", "字段约束说明", "关联逻辑说明", "校验场景覆盖矩阵"));
         for (String sheetName : required) {
             if (workbook.getSheet(sheetName) == null) {
                 throw new BadRequestException("缺少必需 sheet：" + sheetName);

@@ -13,19 +13,28 @@ import com.example.datavalidator.repository.DatasetRepository;
 import com.example.datavalidator.repository.RuleBindingRepository;
 import com.example.datavalidator.repository.RuleDefinitionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -104,6 +113,31 @@ class ExcelImportServiceTest {
         }
     }
 
+    @Test
+    void importWorkbookRemovesWpsNullRelationshipsBeforePoiReadsPackage() throws Exception {
+        when(dataProvider.loadAllTables()).thenReturn(seedTables());
+        when(datasetRepository.save(any(DatasetEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tableRepository.save(any(DataTableSnapshotEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(ruleRepository.save(any(RuleDefinitionEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(bindingRepository.save(any(RuleBindingEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        Logger poiLogger = (Logger) LoggerFactory.getLogger("org.apache.poi.ooxml.POIXMLDocumentPart");
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        poiLogger.addAppender(appender);
+
+        ExcelImportService.ImportResult result;
+        try {
+            result = service.importWorkbook(workbookWithWpsNullRelationship());
+        } finally {
+            poiLogger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(result.getRuleCount()).isEqualTo(1);
+        assertThat(appender.list)
+                .noneMatch(event -> event.getFormattedMessage().contains("Skipped invalid entry /xl/NULL"));
+    }
+
     private Map<String, DataTable> seedTables() {
         Map<String, DataTable> tables = new LinkedHashMap<>();
         tables.put("t_order", table("t_order", "订单ID", "用户ID", "订单金额", "优惠金额", "实付金额"));
@@ -165,6 +199,43 @@ class ExcelImportServiceTest {
         workbook.close();
         return new MockMultipartFile("file", "rules.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", output.toByteArray());
+    }
+
+    private MockMultipartFile workbookWithWpsNullRelationship() throws Exception {
+        XSSFWorkbook workbook = new XSSFWorkbook();
+        ruleSheet(workbook.createSheet("业务规则库"));
+        simpleSheet(workbook.createSheet("字段约束说明"), "字段");
+        simpleSheet(workbook.createSheet("关联逻辑说明"), "关联");
+        scenarioSheet(workbook.createSheet("校验场景覆盖矩阵"));
+        simpleSheet(workbook.createSheet("使用说明"), "说明");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        workbook.write(output);
+        workbook.close();
+        byte[] withInvalidRelationship = addWpsNullRelationship(output.toByteArray());
+        return new MockMultipartFile("file", "rules.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", withInvalidRelationship);
+    }
+
+    private byte[] addWpsNullRelationship(byte[] workbookBytes) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipInputStream input = new ZipInputStream(new ByteArrayInputStream(workbookBytes));
+             ZipOutputStream zipOutput = new ZipOutputStream(output)) {
+            ZipEntry entry;
+            while ((entry = input.getNextEntry()) != null) {
+                zipOutput.putNextEntry(new ZipEntry(entry.getName()));
+                byte[] entryBytes = input.readAllBytes();
+                if ("xl/_rels/workbook.xml.rels".equals(entry.getName())) {
+                    String xml = new String(entryBytes, StandardCharsets.UTF_8);
+                    String wpsNullRelationship = "<Relationship Id=\"rId999\" "
+                            + "Type=\"http://www.wps.cn/officeDocument/2020/cellImage\" Target=\"NULL\"/>";
+                    entryBytes = xml.replace("</Relationships>", wpsNullRelationship + "</Relationships>")
+                            .getBytes(StandardCharsets.UTF_8);
+                }
+                zipOutput.write(entryBytes);
+                zipOutput.closeEntry();
+            }
+        }
+        return output.toByteArray();
     }
 
     private void ruleSheet(Sheet sheet) {
