@@ -151,6 +151,18 @@ public class AiAssistService {
                         new RuleDefinitionEntity.Key(request.getRuleId(), request.getDatasetId()))
                 .orElseThrow(() -> new BadRequestException("规则不存在: " + request.getRuleId()));
         Map<String, List<String>> tableFields = loadTableFields(request.getDatasetId());
+        return recommendRuleBinding(rule, tableFields);
+    }
+
+    public RuleBindingRecommendationResult recommendRuleBinding(
+            RuleDefinitionEntity rule, Map<String, List<String>> tableFields) {
+        if (rule == null) {
+            throw new BadRequestException("规则定义不能为空");
+        }
+        requireText(rule.getRuleId(), "ruleId");
+        if (tableFields == null || tableFields.isEmpty()) {
+            throw new BadRequestException("字段元数据不能为空");
+        }
         RuleTemplateSemanticMatch localMatch = semanticMapper.recommend(rule, tableFields);
         RuleBindingRecommendationResult local = localRecommendation(localMatch);
         Optional<String> modelResponse = aiChatClient

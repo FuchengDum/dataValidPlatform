@@ -1,0 +1,16 @@
+schemaVersion: 1
+
+type: file
+tables:
+  - logicalName: contract_bill
+    primaryKey: bill_id
+    headers: [bill_id, contract_amount, discount_amount, receivable_amount]
+    rows:
+      - bill_id: B001
+        contract_amount: 1000
+        discount_amount: 80
+        receivable_amount: 920
+      - bill_id: B002
+        contract_amount: 1000
+        discount_amount: 80
+        receivable_amount: 950
