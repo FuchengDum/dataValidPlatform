@@ -27,10 +27,10 @@ public class DataValidatorApplication {
         SpringApplication.run(DataValidatorApplication.class, args);
     }
 
-    private static boolean isCli(String[] args) {
+    static boolean isCli(String[] args) {
         return args != null && args.length > 0
                 && ("run".equals(args[0]) || "validate".equals(args[0]) || "recommend".equals(args[0])
                 || "lint".equals(args[0])
-                || "help".equals(args[0]) || "--help".equals(args[0]));
+                || "help".equals(args[0]) || "--help".equals(args[0]) || "--version".equals(args[0]));
     }
 }

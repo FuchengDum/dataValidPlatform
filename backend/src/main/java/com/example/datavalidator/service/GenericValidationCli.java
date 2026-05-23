@@ -20,6 +20,7 @@ import java.util.Set;
 
 @Component
 public class GenericValidationCli {
+    private static final String FALLBACK_VERSION = "0.1.0";
     private final GenericRuleAssetLoader assetLoader;
     private final GenericValidationRunner runner;
     private final AiAssistService aiAssistService;
@@ -42,6 +43,10 @@ public class GenericValidationCli {
         try {
             if (args.length == 0 || "help".equals(args[0]) || "--help".equals(args[0])) {
                 printUsage();
+                return 0;
+            }
+            if ("--version".equals(args[0])) {
+                System.out.println("data-validator " + toolVersion());
                 return 0;
             }
             if ("run".equals(args[0])) {
@@ -455,6 +460,11 @@ public class GenericValidationCli {
     private String safeFileName(String value) {
         String text = firstText(value, "rule");
         return text.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    private String toolVersion() {
+        String version = GenericValidationCli.class.getPackage().getImplementationVersion();
+        return isBlank(version) ? FALLBACK_VERSION : version;
     }
 
     private void writeJsonResult(Object value, String output) throws Exception {

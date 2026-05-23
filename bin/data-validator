@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+APP_HOME=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+if [ -n "${DATA_VALIDATOR_JAR:-}" ]; then
+  JAR_PATH=$DATA_VALIDATOR_JAR
+else
+  JAR_PATH="$APP_HOME/backend/target/data-validator-0.1.0.jar"
+fi
+
+if [ ! -f "$JAR_PATH" ]; then
+  echo "data-validator jar not found: $JAR_PATH" >&2
+  echo "Build it first: cd backend && mvn package -DskipTests" >&2
+  exit 1
+fi
+
+exec java ${JAVA_OPTS:-} -jar "$JAR_PATH" "$@"

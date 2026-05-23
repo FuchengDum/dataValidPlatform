@@ -23,6 +23,24 @@ class GenericValidationCliTest {
     Path tempDir;
 
     @Test
+    void versionPrintsArtifactVersionWithoutStartingValidation() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        PrintStream originalOut = System.out;
+
+        int exitCode;
+        try {
+            System.setOut(new PrintStream(stdout));
+            exitCode = cli(objectMapper).run(new String[] {"--version"});
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        assertThat(exitCode).isZero();
+        assertThat(stdout.toString().trim()).isEqualTo("data-validator 0.1.0");
+    }
+
+    @Test
     void recommendWritesLocalRecommendationJson() throws Exception {
         write("rules.yml", ""
                 + "rules:\n"
