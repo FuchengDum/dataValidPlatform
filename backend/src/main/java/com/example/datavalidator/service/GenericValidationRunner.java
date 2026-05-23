@@ -119,7 +119,7 @@ public class GenericValidationRunner {
 
     private RuleCategory parseCategory(String value) {
         try {
-            return RuleCategory.valueOf(isBlank(value) ? "SINGLE_BUSINESS_RULE" : value.trim().toUpperCase());
+            return RuleCategory.valueOf(GenericRuleValueNormalizer.category(value));
         } catch (Exception ex) {
             throw new BadRequestException("规则分类不支持: " + value);
         }
@@ -127,7 +127,7 @@ public class GenericValidationRunner {
 
     private Severity parseSeverity(String value) {
         try {
-            return Severity.valueOf(isBlank(value) ? "CRITICAL" : value.trim().toUpperCase());
+            return Severity.valueOf(GenericRuleValueNormalizer.severity(value));
         } catch (Exception ex) {
             throw new BadRequestException("严重等级不支持: " + value);
         }

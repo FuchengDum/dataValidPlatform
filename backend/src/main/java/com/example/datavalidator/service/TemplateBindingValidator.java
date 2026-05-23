@@ -163,6 +163,7 @@ class TemplateBindingValidator {
         if (params.containsKey("targetWhere")) {
             RowExpressionEvaluator.validatePredicate(params.get("targetWhere"), targetHeaders);
         }
+        validateSourceExists(params.get("sourceExists"), headersByTable, sourceHeaders);
     }
 
     private static void validateAggregationEquals(Map<String, Object> params, Map<String, List<String>> headersByTable) {

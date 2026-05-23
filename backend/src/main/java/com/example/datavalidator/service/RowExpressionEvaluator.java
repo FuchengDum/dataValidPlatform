@@ -16,7 +16,7 @@ import java.util.Optional;
 class RowExpressionEvaluator {
     private static final List<String> COMPARISON_OPERATORS = Arrays.asList("==", "!=", ">", ">=", "<", "<=");
     private static final List<String> PREDICATE_OPERATORS = Arrays.asList(
-            "==", "!=", ">", ">=", "<", "<=", "in", "notIn", "isNull", "isNotNull");
+            "==", "!=", ">", ">=", "<", "<=", "in", "notIn", "isNull", "isNotNull", "isInteger");
     private static final List<String> ARITHMETIC_OPERATORS = Arrays.asList("+", "-", "*", "/");
 
     private RowExpressionEvaluator() {
@@ -169,7 +169,7 @@ class RowExpressionEvaluator {
             throw new BadRequestException(operatorMessage + operator);
         }
         validateNode(predicate.get("left"), headers);
-        if (!"isNull".equals(operator) && !"isNotNull".equals(operator)) {
+        if (!unaryOperator(operator)) {
             validateNode(predicate.get("right"), headers);
         }
     }
@@ -309,6 +309,10 @@ class RowExpressionEvaluator {
         if ("isNotNull".equals(operator)) {
             return !ValueParsers.isBlank(left.rawValue);
         }
+        if ("isInteger".equals(operator)) {
+            return left.decimal.isPresent()
+                    && left.decimal.get().stripTrailingZeros().scale() <= 0;
+        }
         if ("in".equals(operator)) {
             return values(rawRight).contains(left.rawValue);
         }
@@ -373,7 +377,7 @@ class RowExpressionEvaluator {
     }
 
     private static String conditionText(String left, String operator, String right) {
-        if ("isNull".equals(operator) || "isNotNull".equals(operator)) {
+        if (unaryOperator(operator)) {
             return left + " " + operator;
         }
         return left + " " + operator + " " + right;
@@ -386,7 +390,14 @@ class RowExpressionEvaluator {
         if ("isNotNull".equals(operator)) {
             return "应非空";
         }
+        if ("isInteger".equals(operator)) {
+            return "整数";
+        }
         return right.summary();
+    }
+
+    private static boolean unaryOperator(String operator) {
+        return "isNull".equals(operator) || "isNotNull".equals(operator) || "isInteger".equals(operator);
     }
 
     private static String formatDecimal(BigDecimal value) {

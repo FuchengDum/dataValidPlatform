@@ -413,10 +413,18 @@ public class ExcelImportService {
         entity.setId(IdFactory.next("bind"));
         entity.setDatasetId(datasetId);
         entity.setRuleId(rule.getRuleId());
+        Map<String, Object> templateParams = defaultTemplateParams(rule.getRuleId());
+        if (rule.getTemplateCode() != null && !templateParams.isEmpty()) {
+            entity.setExecutorType("TEMPLATE");
+            entity.setBuiltinExecutorName("");
+            entity.setTemplateCode(rule.getTemplateCode());
+            entity.setTemplateParamsJson(jsonService.write(templateParams));
+            return entity;
+        }
         entity.setExecutorType("BUILTIN");
         entity.setBuiltinExecutorName(rule.getRuleId());
         entity.setTemplateCode(rule.getTemplateCode());
-        entity.setTemplateParamsJson(jsonService.write(defaultTemplateParams(rule.getRuleId())));
+        entity.setTemplateParamsJson(jsonService.write(templateParams));
         return entity;
     }
 

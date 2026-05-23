@@ -70,6 +70,28 @@ class TemplateRuleExecutorTest {
     }
 
     @Test
+    void numericTypeTemplateCanRejectBlankValues() {
+        DataTable orders = table("t_order", "订单ID",
+                row("ORD014", "订单ID", "ORD014", "订单金额", ""),
+                row("ORD016", "订单ID", "ORD016", "订单金额", "abc"),
+                row("ORD017", "订单ID", "ORD017", "订单金额", "20.05"));
+        RuleBinding binding = template("R003", "NUMERIC_TYPE")
+                .param("tableName", "t_order")
+                .param("fields", Arrays.asList("订单金额"))
+                .param("allowBlank", false)
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R003", "金额类型校验"),
+                tables(orders), binding);
+
+        assertThat(findings).hasSize(2);
+        assertThat(findings).extracting(ValidationFinding::getRecordKey)
+                .containsExactly("ORD014", "ORD016");
+        assertThat(findings).extracting(ValidationFinding::getExpectedValue)
+                .containsOnly("数值类型");
+    }
+
+    @Test
     void fieldExpressionTemplateComparesCalculatedFieldValue() {
         DataTable items = table("order_item", "明细ID",
                 row("I001", "明细ID", "I001", "单价", "10", "数量", "2", "小计金额", "20"),
@@ -251,6 +273,30 @@ class TemplateRuleExecutorTest {
         assertThat(findings).hasSize(1);
         assertThat(findings.get(0).getRecordKey()).isEqualTo("ORD004");
         assertThat(findings.get(0).getExpectedValue()).isEqualTo("下单时间=2026-04-03 09:00:00");
+    }
+
+    @Test
+    void rowExpressionTemplateSupportsIntegerPredicate() {
+        DataTable items = table("t_order_item", "明细ID",
+                row("ITM001", "明细ID", "ITM001", "数量", "1"),
+                row("ITM002", "明细ID", "ITM002", "数量", "1.0"),
+                row("ITM003", "明细ID", "ITM003", "数量", "1.5"),
+                row("ITM004", "明细ID", "ITM004", "数量", ""),
+                row("ITM005", "明细ID", "ITM005", "数量", "abc"));
+        RuleBinding binding = template("R012", "ROW_EXPRESSION")
+                .param("tableName", "t_order_item")
+                .param("conditions", Arrays.asList(
+                        condition(field("数量"), "isInteger", null)))
+                .build();
+
+        List<ValidationFinding> findings = executor.execute(rule("R012", "明细数量校验"),
+                tables(items), binding);
+
+        assertThat(findings).hasSize(3);
+        assertThat(findings).extracting(ValidationFinding::getRecordKey)
+                .containsExactly("ITM003", "ITM004", "ITM005");
+        assertThat(findings).extracting(ValidationFinding::getExpectedValue)
+                .containsOnly("整数");
     }
 
     @Test

@@ -34,7 +34,8 @@ public class TemplateRuleExecutor {
             case "NON_NEGATIVE":
                 return nonNegative(rule, table(tables, params), fields(params.get("fields")));
             case "NUMERIC_TYPE":
-                return numericType(rule, table(tables, params), fields(params.get("fields")));
+                return numericType(rule, table(tables, params), fields(params.get("fields")),
+                        allowBlank(params));
             case "FIELD_EXPRESSION":
                 return fieldExpression(rule, table(tables, params), asString(params.get("expression")));
             case "ROW_EXPRESSION":
@@ -94,7 +95,8 @@ public class TemplateRuleExecutor {
         return findings;
     }
 
-    private List<ValidationFinding> numericType(RuleDefinition rule, DataTable table, List<String> fields) {
+    private List<ValidationFinding> numericType(RuleDefinition rule, DataTable table, List<String> fields,
+                                                boolean allowBlank) {
         if (table == null) {
             return Collections.emptyList();
         }
@@ -102,7 +104,8 @@ public class TemplateRuleExecutor {
         for (DataRow row : table.getRows()) {
             for (String field : fields) {
                 String value = row.value(field);
-                if (!ValueParsers.isBlank(value) && !ValueParsers.decimal(value).isPresent()) {
+                if ((ValueParsers.isBlank(value) && !allowBlank)
+                        || (!ValueParsers.isBlank(value) && !ValueParsers.decimal(value).isPresent())) {
                     findings.add(finding(rule, table, row, field, value, "数值类型",
                             field + "必须为数值", "FIELD_VALUE"));
                 }
@@ -239,6 +242,14 @@ public class TemplateRuleExecutor {
         return !(where instanceof Map) || RowExpressionEvaluator.matches(where, row);
     }
 
+    private boolean allowBlank(Map<String, Object> params) {
+        if (params == null || !params.containsKey("allowBlank")) {
+            return true;
+        }
+        Object value = params.get("allowBlank");
+        return value instanceof Boolean ? (Boolean) value : Boolean.parseBoolean(asString(value));
+    }
+
     private List<ValidationFinding> fieldEquals(RuleDefinition rule, Map<String, DataTable> tables,
                                                 Map<String, Object> params) {
         DataTable source = tables.get(asString(params.get("source")));
@@ -283,7 +294,8 @@ public class TemplateRuleExecutor {
         }
         List<ValidationFinding> findings = new ArrayList<>();
         for (DataRow sourceRow : source.getRows()) {
-            if (!matchesWhere(params.get("sourceWhere"), sourceRow)) {
+            if (!matchesWhere(params.get("sourceWhere"), sourceRow)
+                    || !matchesSourceExists(params.get("sourceExists"), sourceRow, tables)) {
                 continue;
             }
             List<DataRow> matchedRows = matchedTargets(target, keys, sourceRow, params.get("targetWhere"));

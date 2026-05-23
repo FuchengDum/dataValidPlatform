@@ -14,7 +14,9 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -138,6 +140,71 @@ class GenericValidationRunnerTest {
         assertThat(result.getReports()).containsKey("junit");
         String junit = Files.readString(Path.of(result.getReports().get("junit")));
         assertThat(junit).contains("<testsuite").contains("<failure");
+    }
+
+    @Test
+    void runsRulesWithChineseCategoryAndSeverityAliases() throws Exception {
+        write("source.yml", ""
+                + "schemaVersion: 1\n"
+                + "type: file\n"
+                + "tables:\n"
+                + "  - logicalName: t_order\n"
+                + "    primaryKey: 订单ID\n"
+                + "    headers: [订单ID, 订单金额]\n"
+                + "    rows:\n"
+                + "      - 订单ID: ORD001\n"
+                + "        订单金额: -1\n");
+        write("rules.yml", ""
+                + "schemaVersion: 1\n"
+                + "rules:\n"
+                + "  - ruleId: R001\n"
+                + "    ruleName: 金额非负校验\n"
+                + "    category: 单表校验-字段约束\n"
+                + "    severity: 严重\n"
+                + "    templateCode: NON_NEGATIVE\n"
+                + "    templateParams:\n"
+                + "      tableName: t_order\n"
+                + "      fields: [订单金额]\n");
+        write("validator.yml", ""
+                + "schemaVersion: 1\n"
+                + "source:\n"
+                + "  type: file\n"
+                + "  file: source.yml\n"
+                + "rules:\n"
+                + "  file: rules.yml\n"
+                + "validation:\n"
+                + "  noReport: true\n");
+
+        GenericValidationResult result = runner().run(tempDir.resolve("validator.yml"));
+
+        assertThat(result.getExecutedRules()).isEqualTo(1);
+        assertThat(result.getCriticalCount()).isEqualTo(1);
+        assertThat(result.getFindings().get(0).getRuleCategory())
+                .isEqualTo(com.example.datavalidator.domain.RuleCategory.SINGLE_FIELD_CONSTRAINT);
+    }
+
+    @Test
+    void case5ClasspathAndExampleRulePackagesStayInSync() throws Exception {
+        Path classpathRules = Path.of("src/main/resources/case5/rules.yml");
+        Path exampleRules = Path.of("../examples/case5-seed/rules.yml");
+
+        assertThat(Files.readString(classpathRules)).isEqualTo(Files.readString(exampleRules));
+    }
+
+    @Test
+    void runsCase5SeedRulePackageFromJdbcSource() throws Exception {
+        Path config = Path.of("../examples/case5-seed/validator.yml");
+
+        GenericValidationResult result = runner().run(config);
+
+        assertThat(result.getTotalRules()).isEqualTo(30);
+        assertThat(result.getExecutedRules()).isEqualTo(30);
+        assertThat(result.getSourceSummary().getTableCount()).isEqualTo(5);
+        assertThat(result.getSourceSummary().getTotalRows()).isEqualTo(70);
+        assertThat(result.getFindings()).isNotEmpty();
+        Set<String> ruleIds = new HashSet<>();
+        result.getFindings().forEach(finding -> ruleIds.add(finding.getRuleId()));
+        assertThat(ruleIds).contains("R001", "R003", "R012", "R030");
     }
 
     @Test

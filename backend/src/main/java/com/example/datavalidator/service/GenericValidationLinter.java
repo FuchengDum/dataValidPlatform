@@ -93,8 +93,8 @@ public class GenericValidationLinter {
             return;
         }
         requireText(rule.getRuleId(), "ruleId", base + ".ruleId", result);
-        checkEnum(rule.getCategory(), SUPPORTED_CATEGORIES, "category", base + ".category", result);
-        checkEnum(rule.getSeverity(), SUPPORTED_SEVERITIES, "severity", base + ".severity", result);
+        checkRuleCategory(rule.getCategory(), base + ".category", result);
+        checkRuleSeverity(rule.getSeverity(), base + ".severity", result);
         String templateCode = rule.getTemplateCode();
         if (!requireText(templateCode, "templateCode", base + ".templateCode", result)) {
             return;
@@ -289,6 +289,7 @@ public class GenericValidationLinter {
         scanJoinNodes(params.get("assert"), source, target, tableFields, base + ".assert", result);
         scanFieldNodes(params.get("sourceWhere"), source, tableFields, base + ".sourceWhere", result);
         scanFieldNodes(params.get("targetWhere"), target, tableFields, base + ".targetWhere", result);
+        checkSourceExists(params.get("sourceExists"), source, base + ".sourceExists", tableFields, result);
     }
 
     @SuppressWarnings("unchecked")
@@ -603,12 +604,22 @@ public class GenericValidationLinter {
         }
     }
 
-    private void checkEnum(String value, Set<String> supported, String field, String path, GenericLintResult result) {
-        if (isBlank(value) || supported.contains(value.trim().toUpperCase())) {
-            return;
+    private void checkRuleCategory(String value, String path, GenericLintResult result) {
+        try {
+            GenericRuleValueNormalizer.category(value);
+        } catch (BadRequestException ex) {
+            result.error("UNSUPPORTED_CATEGORY", ex.getMessage(), path,
+                    "请使用支持的枚举值: " + SUPPORTED_CATEGORIES + "，或中文规则分类别名。");
         }
-        result.error("UNSUPPORTED_" + field.toUpperCase(), field + " 不支持: " + value,
-                path, "请使用支持的枚举值: " + supported + "。");
+    }
+
+    private void checkRuleSeverity(String value, String path, GenericLintResult result) {
+        try {
+            GenericRuleValueNormalizer.severity(value);
+        } catch (BadRequestException ex) {
+            result.error("UNSUPPORTED_SEVERITY", ex.getMessage(), path,
+                    "请使用支持的枚举值: " + SUPPORTED_SEVERITIES + "，或中文严重等级别名。");
+        }
     }
 
     private boolean isJdbcSource(GenericValidationConfig.SourceConfig source) {
