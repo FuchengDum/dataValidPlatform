@@ -23,6 +23,9 @@ public class GenericValidationLinter {
             "AGGREGATION_EQUALS", "AGGREGATE_ASSERT", "DUPLICATE_ASSERT", "DUPLICATE_CHECK"));
     private static final Set<String> COMPATIBLE_TEMPLATES = new HashSet<>(
             Arrays.asList("FIELD_EQUALS", "AGGREGATION_EQUALS", "DUPLICATE_CHECK"));
+    private static final Set<String> SUPPORTED_CATEGORIES = new HashSet<>(Arrays.asList(
+            "SINGLE_FIELD_CONSTRAINT", "SINGLE_BUSINESS_RULE", "MULTI_TABLE_RELATION", "METRIC_CONSISTENCY"));
+    private static final Set<String> SUPPORTED_SEVERITIES = new HashSet<>(Arrays.asList("CRITICAL", "WARNING"));
 
     private final GenericRuleAssetLoader assetLoader;
 
@@ -90,6 +93,8 @@ public class GenericValidationLinter {
             return;
         }
         requireText(rule.getRuleId(), "ruleId", base + ".ruleId", result);
+        checkEnum(rule.getCategory(), SUPPORTED_CATEGORIES, "category", base + ".category", result);
+        checkEnum(rule.getSeverity(), SUPPORTED_SEVERITIES, "severity", base + ".severity", result);
         String templateCode = rule.getTemplateCode();
         if (!requireText(templateCode, "templateCode", base + ".templateCode", result)) {
             return;
@@ -112,6 +117,10 @@ public class GenericValidationLinter {
 
     private void lintSource(GenericValidationConfig.SourceConfig source, GenericLintResult result) {
         lintSchema(source.getSchemaVersion(), "schemaVersion", result);
+        boolean jdbcSource = isJdbcSource(source);
+        if (jdbcSource) {
+            lintJdbcConfig(source.getJdbc(), result);
+        }
         if (source.getTables() == null || source.getTables().isEmpty()) {
             result.error("MISSING_TABLES", "元数据必须包含 tables 列表", "tables", "请在 source.yml 中配置业务表。");
             return;
@@ -134,6 +143,81 @@ public class GenericValidationLinter {
                 result.error("MISSING_FIELDS", "表缺少 headers 或 rows: " + table.getLogicalName(),
                         base + ".headers", "请在 source.yml 中提供字段列表。");
             }
+            if (jdbcSource) {
+                lintJdbcTable(table, base, result);
+            }
+        }
+    }
+
+    private void lintJdbcConfig(GenericValidationConfig.JdbcConfig jdbc, GenericLintResult result) {
+        if (jdbc == null) {
+            result.error("MISSING_JDBC_CONFIG", "JDBC 数据源缺少 jdbc 配置", "jdbc", "请补充只读数据库连接配置。");
+            return;
+        }
+        if (requireText(jdbc.getUrl(), "url", "jdbc.url", result)) {
+            String secret = JdbcCredentialGuard.sensitiveUrlParameter(jdbc.getUrl());
+            if (secret != null) {
+                result.error("JDBC_URL_CONTAINS_SECRET", "JDBC URL 不允许包含敏感参数: " + secret,
+                        "jdbc.url", "请从 URL 中移除凭证，只通过 passwordEnv 提供密码。");
+            }
+        }
+        requireText(jdbc.getDriverClassName(), "driverClassName", "jdbc.driverClassName", result);
+        String dialect = value(jdbc.getDialect()).trim().toLowerCase();
+        if (!"h2".equals(dialect) && !"mysql".equals(dialect)) {
+            result.error("UNSUPPORTED_JDBC_DIALECT", "不支持的 JDBC 方言: " + jdbc.getDialect(),
+                    "jdbc.dialect", "当前仅支持 h2 或 mysql。");
+        }
+        if (jdbc.getMaxRows() <= 0) {
+            result.error("INVALID_JDBC_MAX_ROWS", "jdbc.maxRows 必须大于 0",
+                    "jdbc.maxRows", "请配置正整数，避免无限制读取业务库。");
+        }
+        if (!isBlank(jdbc.getPassword())) {
+            result.error("PLAINTEXT_JDBC_PASSWORD", "JDBC 配置不允许明文 password",
+                    "jdbc.password", "请改用 passwordEnv 环境变量。");
+        }
+        if ("mysql".equals(dialect) && isBlank(jdbc.getPasswordEnv())) {
+            result.error("MISSING_JDBC_PASSWORD_ENV", "MySQL JDBC 配置必须使用 passwordEnv",
+                    "jdbc.passwordEnv", "请通过环境变量提供只读库密码。");
+        }
+    }
+
+    private void lintJdbcTable(GenericValidationConfig.TableConfig table, String base, GenericLintResult result) {
+        if (table.getHeaders() == null || table.getHeaders().isEmpty()) {
+            result.error("MISSING_JDBC_HEADERS", "JDBC 表必须配置 headers", base + ".headers",
+                    "请声明允许读取和参与校验的字段白名单。");
+        } else {
+            for (int index = 0; index < table.getHeaders().size(); index++) {
+                requireIdentifier(table.getHeaders().get(index), base + ".headers[" + index + "]", result);
+            }
+        }
+        if (isBlank(table.getSql())) {
+            if (isBlank(table.getPhysicalName())) {
+                result.error("MISSING_PHYSICAL_TABLE", "JDBC 表模式缺少 physicalName", base + ".physicalName",
+                        "请配置真实业务表名。");
+            } else {
+                requireQualifiedIdentifier(table.getPhysicalName(), base + ".physicalName", result);
+            }
+        } else {
+            try {
+                SqlReadOnlyGuard.requireSelect(table.getSql());
+            } catch (BadRequestException ex) {
+                result.error("UNSAFE_SQL", ex.getMessage(), base + ".sql",
+                        "请使用显式字段的单条只读 SELECT。");
+            }
+        }
+        lintFieldMappings(table, base, result);
+    }
+
+    private void lintFieldMappings(GenericValidationConfig.TableConfig table, String base, GenericLintResult result) {
+        if (table.getFieldMappings() == null || table.getFieldMappings().isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, String> entry : table.getFieldMappings().entrySet()) {
+            if (table.getHeaders() == null || !table.getHeaders().contains(entry.getKey())) {
+                result.error("UNKNOWN_FIELD_MAPPING", "fieldMappings 引用了未声明的逻辑字段: " + entry.getKey(),
+                        base + ".fieldMappings." + entry.getKey(), "请先在 headers 中声明该字段。");
+            }
+            requireIdentifier(entry.getValue(), base + ".fieldMappings." + entry.getKey(), result);
         }
     }
 
@@ -501,6 +585,35 @@ public class GenericValidationLinter {
             result.error("UNSUPPORTED_SCHEMA_VERSION", "不支持的 schemaVersion: " + schemaVersion, path,
                     "当前仅支持 schemaVersion: " + SUPPORTED_SCHEMA_VERSION + "。");
         }
+    }
+
+    private void requireQualifiedIdentifier(String identifier, String path, GenericLintResult result) {
+        try {
+            SqlReadOnlyGuard.requireQualifiedIdentifier(identifier);
+        } catch (BadRequestException ex) {
+            result.error("INVALID_IDENTIFIER", ex.getMessage(), path, "请使用安全的表名或字段名。");
+        }
+    }
+
+    private void requireIdentifier(String identifier, String path, GenericLintResult result) {
+        try {
+            SqlReadOnlyGuard.requireIdentifier(identifier);
+        } catch (BadRequestException ex) {
+            result.error("INVALID_IDENTIFIER", ex.getMessage(), path, "请使用安全的字段名。");
+        }
+    }
+
+    private void checkEnum(String value, Set<String> supported, String field, String path, GenericLintResult result) {
+        if (isBlank(value) || supported.contains(value.trim().toUpperCase())) {
+            return;
+        }
+        result.error("UNSUPPORTED_" + field.toUpperCase(), field + " 不支持: " + value,
+                path, "请使用支持的枚举值: " + supported + "。");
+    }
+
+    private boolean isJdbcSource(GenericValidationConfig.SourceConfig source) {
+        String type = value(source.getType()).trim().toLowerCase();
+        return "jdbc".equals(type) || "database_table".equals(type) || "sql_query".equals(type);
     }
 
     private Path resolve(Path baseDir, String path) {

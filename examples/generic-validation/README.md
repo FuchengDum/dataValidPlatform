@@ -26,6 +26,13 @@ cd backend
 mvn spring-boot:run -Dspring-boot.run.arguments="run --config ../examples/generic-validation/validator.yml"
 ```
 
+CI 中可只输出机器可读 summary，并跳过报告落盘：
+
+```bash
+cd backend
+java -jar target/data-validator-0.1.0.jar run --config ../examples/generic-validation/validator.yml --json --no-report
+```
+
 如果本机可直接执行 `java -jar`：
 
 ```bash
@@ -38,7 +45,16 @@ java -jar target/data-validator-0.1.0.jar run --config ../examples/generic-valid
 
 ```bash
 cd backend
-mvn spring-boot:run -Dspring-boot.run.arguments="recommend --rules ../examples/generic-validation/rules.yml --metadata ../examples/generic-validation/source.yml --output ../examples/generic-validation/reports/recommendations.json"
+mvn spring-boot:run -Dspring-boot.run.arguments="recommend --rules ../examples/generic-validation/rules.yml --metadata ../examples/generic-validation/source.yml --output ../examples/generic-validation/reports/recommendations.json --candidate-rules ../examples/generic-validation/reports/rules.recommended.yml"
+```
+
+推荐结果 JSON 会包含 `diff`、`warningDetails`、`warningCategories` 和 `candidateGenerated`。候选规则包只写入 `--candidate-rules` 指定的新文件，不会自动覆盖正式 `rules.yml`。
+
+如需调试 AI 推荐过程，可显式落盘 prompt 和 response：
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.arguments="recommend --rules ../examples/generic-validation/rules.yml --metadata ../examples/generic-validation/source.yml --output ../examples/generic-validation/reports/recommendations.json --debug-ai ../examples/generic-validation/reports/ai-debug"
 ```
 
 ## 预期结果
@@ -47,8 +63,19 @@ mvn spring-boot:run -Dspring-boot.run.arguments="recommend --rules ../examples/g
 
 CLI 返回退出码 `2` 表示发现严重异常，不表示工具执行失败。
 
+退出码：
+
+| 退出码 | 含义 |
+|---:|---|
+| `0` | 执行成功，未触发配置的失败等级 |
+| `1` | 工具执行失败 |
+| `2` | 发现达到失败等级的数据异常 |
+| `3` | 配置、规则或命令参数非法 |
+
 校验报告和推荐结果默认输出到：
 
 ```text
 examples/generic-validation/reports/
 ```
+
+默认报告格式包含 JSON、Markdown 和 JUnit XML。

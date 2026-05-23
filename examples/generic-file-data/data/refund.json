@@ -1,0 +1,8 @@
+[
+  {
+    "refund_id": "R001",
+    "bill_id": "B003",
+    "refund_amount": 20,
+    "reason": "manual adjust"
+  }
+]

@@ -4,6 +4,7 @@ import com.example.datavalidator.domain.DataRow;
 import com.example.datavalidator.domain.DataTable;
 import com.example.datavalidator.domain.DatasetSourceType;
 import com.example.datavalidator.exception.BadRequestException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -22,29 +23,54 @@ public class GenericDataSourceProvider {
     private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final GenericRuleAssetLoader assetLoader;
-    private final JdbcTemplate jdbcTemplate;
+    private final GenericFileTableReader fileTableReader;
+    private final GenericJdbcTableReader jdbcTableReader;
 
+    @Autowired
     public GenericDataSourceProvider(GenericRuleAssetLoader assetLoader, JdbcTemplate jdbcTemplate) {
+        this(assetLoader, jdbcTemplate, new GenericFileTableReader(),
+                new GenericJdbcTableReader(new GenericJdbcDataSourceFactory()));
+    }
+
+    GenericDataSourceProvider(GenericRuleAssetLoader assetLoader, JdbcTemplate jdbcTemplate,
+                              GenericFileTableReader fileTableReader,
+                              GenericJdbcTableReader jdbcTableReader) {
         this.assetLoader = assetLoader;
-        this.jdbcTemplate = jdbcTemplate;
+        this.fileTableReader = fileTableReader;
+        this.jdbcTableReader = jdbcTableReader;
     }
 
     public Map<String, DataTable> load(GenericValidationConfig.SourceConfig source, Path baseDir) {
         String type = normalize(source.getType());
         if ("file".equals(type)) {
             if (isBlank(source.getFile())) {
-                return fromConfiguredTables(source.getTables(), DatasetSourceType.EXCEL_WORKBOOK);
+                return fromFileTables(source.getTables(), baseDir, DatasetSourceType.EXCEL_WORKBOOK);
             }
             Path path = resolve(baseDir, source.getFile());
-            return fromConfiguredTables(assetLoader.loadSource(path).getTables(), DatasetSourceType.EXCEL_WORKBOOK);
+            return fromFileTables(assetLoader.loadSource(path).getTables(), path.getParent(),
+                    DatasetSourceType.EXCEL_WORKBOOK);
         }
         if ("inline".equals(type)) {
             return fromConfiguredTables(source.getTables(), DatasetSourceType.EXCEL_WORKBOOK);
         }
         if ("jdbc".equals(type) || "database_table".equals(type) || "sql_query".equals(type)) {
-            return fromJdbc(source.getTables());
+            return fromConfiguredTables(jdbcTableReader.read(source), DatasetSourceType.DATABASE_TABLE);
         }
         throw new BadRequestException("不支持的数据源类型: " + source.getType());
+    }
+
+    private Map<String, DataTable> fromFileTables(List<GenericValidationConfig.TableConfig> configs,
+                                                  Path baseDir, DatasetSourceType sourceType) {
+        Map<String, DataTable> tables = new LinkedHashMap<>();
+        for (GenericValidationConfig.TableConfig config : configs) {
+            requireTableConfig(config);
+            GenericValidationConfig.TableConfig loaded = config;
+            if (!isBlank(config.getFile())) {
+                loaded = fileTableReader.read(config, resolve(baseDir, config.getFile()));
+            }
+            tables.put(loaded.getLogicalName(), dataTable(loaded, sourceType));
+        }
+        return tables;
     }
 
     private Map<String, DataTable> fromConfiguredTables(List<GenericValidationConfig.TableConfig> configs,
@@ -52,51 +78,27 @@ public class GenericDataSourceProvider {
         Map<String, DataTable> tables = new LinkedHashMap<>();
         for (GenericValidationConfig.TableConfig config : configs) {
             requireTableConfig(config);
-            DataTable table = new DataTable();
-            table.setLogicalName(config.getLogicalName());
-            table.setSheetName(config.getLogicalName());
-            table.setSourceType(sourceType);
-            table.setHeaders(headers(config));
-            table.setRows(rows(config, table.getHeaders()));
-            tables.put(table.getLogicalName(), table);
+            DataTable table = dataTable(config, sourceType);
+            tables.put(config.getLogicalName(), table);
         }
         return tables;
     }
 
-    private Map<String, DataTable> fromJdbc(List<GenericValidationConfig.TableConfig> configs) {
-        Map<String, DataTable> tables = new LinkedHashMap<>();
-        for (GenericValidationConfig.TableConfig config : configs) {
-            requireTableConfig(config);
-            String sql = jdbcSql(config);
-            SqlReadOnlyGuard.requireSelect(sql);
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
-            GenericValidationConfig.TableConfig loaded = new GenericValidationConfig.TableConfig();
-            loaded.setLogicalName(config.getLogicalName());
-            loaded.setPrimaryKey(config.getPrimaryKey());
-            loaded.setRows(rows);
-            loaded.setHeaders(config.getHeaders().isEmpty() && !rows.isEmpty()
-                    ? new ArrayList<>(rows.get(0).keySet()) : config.getHeaders());
-            tables.put(config.getLogicalName(), fromConfiguredTables(
-                    java.util.Collections.singletonList(loaded), DatasetSourceType.DATABASE_TABLE)
-                    .get(config.getLogicalName()));
-        }
-        return tables;
-    }
-
-    private String jdbcSql(GenericValidationConfig.TableConfig config) {
-        if (!isBlank(config.getSql())) {
-            return config.getSql();
-        }
-        String tableName = isBlank(config.getPhysicalName()) ? config.getLogicalName() : config.getPhysicalName();
-        SqlReadOnlyGuard.requireIdentifier(tableName);
-        return "SELECT * FROM " + tableName;
+    private DataTable dataTable(GenericValidationConfig.TableConfig config, DatasetSourceType sourceType) {
+        DataTable table = new DataTable();
+        table.setLogicalName(config.getLogicalName());
+        table.setSheetName(config.getLogicalName());
+        table.setSourceType(sourceType);
+        table.setHeaders(headers(config));
+        table.setRows(rows(config, table.getHeaders()));
+        return table;
     }
 
     private List<String> headers(GenericValidationConfig.TableConfig config) {
-        if (!config.getHeaders().isEmpty()) {
+        if (config.getHeaders() != null && !config.getHeaders().isEmpty()) {
             return config.getHeaders();
         }
-        if (config.getRows().isEmpty()) {
+        if (config.getRows() == null || config.getRows().isEmpty()) {
             throw new BadRequestException("表缺少 headers 或 rows: " + config.getLogicalName());
         }
         return new ArrayList<>(config.getRows().get(0).keySet());
@@ -105,6 +107,9 @@ public class GenericDataSourceProvider {
     private List<DataRow> rows(GenericValidationConfig.TableConfig config, List<String> headers) {
         List<DataRow> rows = new ArrayList<>();
         int index = 1;
+        if (config.getRows() == null) {
+            return rows;
+        }
         for (Map<String, Object> item : config.getRows()) {
             DataRow row = new DataRow();
             row.setRowIndex(index++);

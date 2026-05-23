@@ -9,7 +9,9 @@ import com.example.datavalidator.domain.ValidationFinding;
 import com.example.datavalidator.exception.BadRequestException;
 import org.springframework.stereotype.Service;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -43,8 +45,10 @@ public class GenericValidationRunner {
 
     public GenericValidationResult run(GenericValidationConfig config, Path baseDir) {
         LocalDateTime startedAt = LocalDateTime.now();
-        Map<String, DataTable> tables = dataSourceProvider.load(config.getSource(), baseDir);
-        GenericRulePackage rulePackage = assetLoader.loadRules(resolve(baseDir, config.getRules().getFile()));
+        ResolvedSource source = resolveSource(config.getSource(), baseDir);
+        Map<String, DataTable> tables = dataSourceProvider.load(source.config, source.baseDir);
+        Path rulePath = resolve(baseDir, config.getRules().getFile());
+        GenericRulePackage rulePackage = assetLoader.loadRules(rulePath);
         Map<String, List<String>> headersByTable = tables.values().stream().collect(Collectors.toMap(
                 DataTable::getLogicalName, DataTable::getHeaders, (left, right) -> left, LinkedHashMap::new));
         List<ValidationFinding> findings = new ArrayList<>();
@@ -67,6 +71,11 @@ public class GenericValidationRunner {
         result.setCriticalCount(count(findings, Severity.CRITICAL));
         result.setWarningCount(count(findings, Severity.WARNING));
         result.setDurationMillis(Duration.between(startedAt, LocalDateTime.now()).toMillis());
+        result.setToolVersion(toolVersion());
+        result.setRulePackageHash(sha256(rulePath));
+        result.setSourceSummary(sourceSummary(source.config, tables));
+        result.setExecution(executionSummary(startedAt, result.getDurationMillis(),
+                config.getValidation().getCommandSummary()));
         reportWriter.writeReports(result, config.getValidation(), baseDir);
         return result;
     }
@@ -128,12 +137,68 @@ public class GenericValidationRunner {
         return (int) findings.stream().filter(item -> item.getSeverity() == severity).count();
     }
 
+    private GenericValidationResult.SourceSummary sourceSummary(
+            GenericValidationConfig.SourceConfig source, Map<String, DataTable> tables) {
+        GenericValidationResult.SourceSummary summary = new GenericValidationResult.SourceSummary();
+        summary.setType(source == null ? "" : source.getType());
+        summary.setTableCount(tables.size());
+        List<GenericValidationResult.TableSummary> tableSummaries = new ArrayList<>();
+        int totalRows = 0;
+        for (DataTable table : tables.values()) {
+            GenericValidationResult.TableSummary tableSummary = new GenericValidationResult.TableSummary();
+            tableSummary.setLogicalName(table.getLogicalName());
+            tableSummary.setRowCount(table.getRows() == null ? 0 : table.getRows().size());
+            tableSummary.setFieldCount(table.getHeaders() == null ? 0 : table.getHeaders().size());
+            totalRows += tableSummary.getRowCount();
+            tableSummaries.add(tableSummary);
+        }
+        summary.setTotalRows(totalRows);
+        summary.setTables(tableSummaries);
+        return summary;
+    }
+
+    private GenericValidationResult.ExecutionSummary executionSummary(
+            LocalDateTime startedAt, long durationMillis, String command) {
+        GenericValidationResult.ExecutionSummary summary = new GenericValidationResult.ExecutionSummary();
+        summary.setStartedAt(startedAt.toString());
+        summary.setDurationMillis(durationMillis);
+        summary.setCommand(command);
+        return summary;
+    }
+
+    private String toolVersion() {
+        String version = GenericValidationRunner.class.getPackage().getImplementationVersion();
+        return isBlank(version) ? "0.1.0" : version;
+    }
+
+    private String sha256(Path path) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(Files.readAllBytes(path));
+            StringBuilder builder = new StringBuilder();
+            for (byte value : hash) {
+                builder.append(String.format("%02x", value));
+            }
+            return builder.toString();
+        } catch (Exception ex) {
+            throw new BadRequestException("规则包 hash 计算失败: " + path);
+        }
+    }
+
     private Path resolve(Path baseDir, String path) {
         if (isBlank(path)) {
             throw new BadRequestException("规则文件不能为空");
         }
         Path candidate = Path.of(path);
         return candidate.isAbsolute() ? candidate : baseDir.resolve(candidate).normalize();
+    }
+
+    private ResolvedSource resolveSource(GenericValidationConfig.SourceConfig source, Path baseDir) {
+        if (source == null || isBlank(source.getFile())) {
+            return new ResolvedSource(source, baseDir);
+        }
+        Path sourcePath = resolve(baseDir, source.getFile());
+        return new ResolvedSource(assetLoader.loadSource(sourcePath), sourcePath.getParent());
     }
 
     private void requireText(String value, String field) {
@@ -144,5 +209,15 @@ public class GenericValidationRunner {
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
+    }
+
+    private static class ResolvedSource {
+        private final GenericValidationConfig.SourceConfig config;
+        private final Path baseDir;
+
+        private ResolvedSource(GenericValidationConfig.SourceConfig config, Path baseDir) {
+            this.config = config;
+            this.baseDir = baseDir;
+        }
     }
 }

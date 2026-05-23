@@ -1,0 +1,23 @@
+schemaVersion: 1
+type: file
+tables:
+  - logicalName: contract_bill
+    primaryKey: bill_id
+    file: data/contract_bill.csv
+    format: csv
+    encoding: UTF-8
+    delimiter: ","
+    headerRow: 1
+    dataStartRow: 2
+    headers: [bill_id, contract_amount, discount_amount, receivable_amount]
+    nullValues: ["", "NULL"]
+  - logicalName: payment
+    primaryKey: payment_id
+    file: data/payment.jsonl
+    format: jsonl
+    headers: [payment_id, bill_id, paid_amount, paid]
+  - logicalName: refund
+    primaryKey: refund_id
+    file: data/refund.json
+    format: json
+    headers: [refund_id, bill_id, refund_amount, reason]
