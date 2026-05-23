@@ -314,17 +314,22 @@ class GenericValidationCliTest {
                 new GenericValidationLinter(new GenericRuleAssetLoader(objectMapper)),
                 objectMapper);
         Path output = tempDir.resolve("recommendations.json");
+        Path candidateRules = tempDir.resolve("rules.recommended.yml");
 
         int exitCode = cli.run(new String[] {
                 "recommend",
                 "--rules", tempDir.resolve("rules.yml").toString(),
                 "--metadata", tempDir.resolve("source.yml").toString(),
-                "--output", output.toString()
+                "--output", output.toString(),
+                "--candidate-rules", candidateRules.toString()
         });
 
-        JsonNode categories = objectMapper.readTree(output.toFile()).get(0).get("warningCategories");
+        JsonNode recommendation = objectMapper.readTree(output.toFile()).get(0);
         assertThat(exitCode).isZero();
+        assertThat(recommendation.get("candidateGenerated").asBoolean()).isFalse();
+        JsonNode categories = recommendation.get("warningCategories");
         assertThat(categories.toString()).contains("AI降级", "字段缺失");
+        assertThat(Files.readString(candidateRules)).contains("rules: []");
     }
 
     @Test

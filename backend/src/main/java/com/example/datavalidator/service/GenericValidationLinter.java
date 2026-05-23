@@ -80,7 +80,7 @@ public class GenericValidationLinter {
             String ruleId = rules.get(index) == null ? null : rules.get(index).getRuleId();
             if (!isBlank(ruleId) && !ruleIds.add(ruleId)) {
                 result.error("DUPLICATE_RULE_ID", "规则 ID 重复: " + ruleId,
-                        "rules[" + index + "].ruleId", "请保证规则包内 ruleId 唯一。");
+                        "rules[" + index + "].ruleId", duplicateRuleIdSuggestion(ruleId));
             }
         }
     }
@@ -101,7 +101,7 @@ public class GenericValidationLinter {
         }
         if (!SUPPORTED_TEMPLATES.contains(templateCode)) {
             result.error("UNKNOWN_TEMPLATE", "不支持的规则模板: " + templateCode,
-                    base + ".templateCode", "请使用已支持模板或先扩展模板执行器。");
+                    base + ".templateCode", unknownTemplateSuggestion());
             return;
         }
         if (COMPATIBLE_TEMPLATES.contains(templateCode)) {
@@ -158,14 +158,14 @@ public class GenericValidationLinter {
             String secret = JdbcCredentialGuard.sensitiveUrlParameter(jdbc.getUrl());
             if (secret != null) {
                 result.error("JDBC_URL_CONTAINS_SECRET", "JDBC URL 不允许包含敏感参数: " + secret,
-                        "jdbc.url", "请从 URL 中移除凭证，只通过 passwordEnv 提供密码。");
+                        "jdbc.url", jdbcUrlSecretSuggestion());
             }
         }
         requireText(jdbc.getDriverClassName(), "driverClassName", "jdbc.driverClassName", result);
         String dialect = value(jdbc.getDialect()).trim().toLowerCase();
         if (!"h2".equals(dialect) && !"mysql".equals(dialect)) {
             result.error("UNSUPPORTED_JDBC_DIALECT", "不支持的 JDBC 方言: " + jdbc.getDialect(),
-                    "jdbc.dialect", "当前仅支持 h2 或 mysql。");
+                    "jdbc.dialect", unsupportedJdbcDialectSuggestion());
         }
         if (jdbc.getMaxRows() <= 0) {
             result.error("INVALID_JDBC_MAX_ROWS", "jdbc.maxRows 必须大于 0",
@@ -173,18 +173,18 @@ public class GenericValidationLinter {
         }
         if (!isBlank(jdbc.getPassword())) {
             result.error("PLAINTEXT_JDBC_PASSWORD", "JDBC 配置不允许明文 password",
-                    "jdbc.password", "请改用 passwordEnv 环境变量。");
+                    "jdbc.password", plaintextJdbcPasswordSuggestion());
         }
         if ("mysql".equals(dialect) && isBlank(jdbc.getPasswordEnv())) {
             result.error("MISSING_JDBC_PASSWORD_ENV", "MySQL JDBC 配置必须使用 passwordEnv",
-                    "jdbc.passwordEnv", "请通过环境变量提供只读库密码。");
+                    "jdbc.passwordEnv", missingJdbcPasswordEnvSuggestion());
         }
     }
 
     private void lintJdbcTable(GenericValidationConfig.TableConfig table, String base, GenericLintResult result) {
         if (table.getHeaders() == null || table.getHeaders().isEmpty()) {
             result.error("MISSING_JDBC_HEADERS", "JDBC 表必须配置 headers", base + ".headers",
-                    "请声明允许读取和参与校验的字段白名单。");
+                    missingJdbcHeadersSuggestion(table));
         } else {
             for (int index = 0; index < table.getHeaders().size(); index++) {
                 requireIdentifier(table.getHeaders().get(index), base + ".headers[" + index + "]", result);
@@ -193,7 +193,7 @@ public class GenericValidationLinter {
         if (isBlank(table.getSql())) {
             if (isBlank(table.getPhysicalName())) {
                 result.error("MISSING_PHYSICAL_TABLE", "JDBC 表模式缺少 physicalName", base + ".physicalName",
-                        "请配置真实业务表名。");
+                        missingPhysicalNameSuggestion(table));
             } else {
                 requireQualifiedIdentifier(table.getPhysicalName(), base + ".physicalName", result);
             }
@@ -202,7 +202,7 @@ public class GenericValidationLinter {
                 SqlReadOnlyGuard.requireSelect(table.getSql());
             } catch (BadRequestException ex) {
                 result.error("UNSAFE_SQL", ex.getMessage(), base + ".sql",
-                        "请使用显式字段的单条只读 SELECT。");
+                        unsafeSqlSuggestion(table));
             }
         }
         lintFieldMappings(table, base, result);
@@ -226,7 +226,8 @@ public class GenericValidationLinter {
         String base = "rules[" + index + "].templateParams";
         Map<String, Object> params = rule.getTemplateParams();
         if (params == null || params.isEmpty()) {
-            result.error("MISSING_TEMPLATE_PARAMS", "规则缺少 templateParams", base, "请补充模板参数。");
+            result.error("MISSING_TEMPLATE_PARAMS", "规则缺少 templateParams", base,
+                    missingTemplateParamsSuggestion(rule.getTemplateCode()));
             return;
         }
         if (FIELD_TEMPLATES.contains(rule.getTemplateCode())) {
@@ -467,7 +468,8 @@ public class GenericValidationLinter {
             return null;
         }
         if (!tableFields.containsKey(table)) {
-            result.error("UNKNOWN_TABLE", "规则引用了未知表: " + table, path, "请在 source.yml 中补充表或修正表名。");
+            result.error("UNKNOWN_TABLE", "规则引用了未知表: " + table, path,
+                    unknownTableSuggestion(path, tableFields));
         }
         return table;
     }
@@ -492,7 +494,7 @@ public class GenericValidationLinter {
         }
         if (!tableFields.get(table).contains(field)) {
             result.error("UNKNOWN_FIELD", "规则引用了未知字段: " + field, path,
-                    "请在 source.yml 中补充字段或修正规则字段名。");
+                    unknownFieldSuggestion(path, table, tableFields));
         }
     }
 
@@ -506,6 +508,243 @@ public class GenericValidationLinter {
             values.add(value(value));
         }
         return values;
+    }
+
+    private String duplicateRuleIdSuggestion(String ruleId) {
+        return yamlSuggestion(
+                "请把重复的 ruleId 改成新的唯一值，避免报告和推荐结果混淆。",
+                "rules:",
+                "  - ruleId: " + ruleId,
+                "  - ruleId: " + ruleId + "_v2");
+    }
+
+    private String unknownTemplateSuggestion() {
+        return yamlSuggestion(
+                "请把 templateCode 改成已支持模板，并补齐对应 templateParams。",
+                "templateCode: NOT_NULL",
+                "templateParams:",
+                "  tableName: contract_bill",
+                "  fields: [receivable_amount]",
+                "# 常用模板: NOT_NULL, NON_NEGATIVE, NUMERIC_TYPE, ROW_EXPRESSION, EXISTS_IN_TABLE");
+    }
+
+    private String missingJdbcPasswordEnvSuggestion() {
+        return yamlSuggestion(
+                "请把数据库密码放到环境变量，再在 YAML 中只保留变量名；不要写 password。",
+                "jdbc:",
+                "  username: readonly_user",
+                "  passwordEnv: BIZ_READONLY_PASSWORD");
+    }
+
+    private String plaintextJdbcPasswordSuggestion() {
+        return yamlSuggestion(
+                "请删除 password，改成环境变量引用，避免凭证进入 YAML、日志或测试产物。",
+                "jdbc:",
+                "  username: readonly_user",
+                "  passwordEnv: BIZ_READONLY_PASSWORD");
+    }
+
+    private String jdbcUrlSecretSuggestion() {
+        return yamlSuggestion(
+                "请把 password/token/secret 从 JDBC URL 中移除，URL 只保留连接参数，凭证改走 passwordEnv。",
+                "jdbc:",
+                "  url: jdbc:mysql://db.example.com:3306/billing?useSSL=true",
+                "  username: readonly_user",
+                "  passwordEnv: BIZ_READONLY_PASSWORD");
+    }
+
+    private String unsupportedJdbcDialectSuggestion() {
+        return yamlSuggestion(
+                "请把 jdbc.dialect 改成已支持值，并确认 driverClassName 与 URL 协调一致。",
+                "jdbc:",
+                "  driverClassName: com.mysql.cj.jdbc.Driver",
+                "  dialect: mysql");
+    }
+
+    private String missingJdbcHeadersSuggestion(GenericValidationConfig.TableConfig table) {
+        String primaryKey = safeIdentifier(table.getPrimaryKey(), "bill_id");
+        String sampleField = fallbackField(table.getHeaders(), primaryKey);
+        return yamlSuggestion(
+                "请补字段白名单，lint 和执行都会按 headers 限制可读取字段。",
+                "tables:",
+                "  - logicalName: " + fallbackTableName(table),
+                "    headers: [" + primaryKey + ", " + sampleField + "]");
+    }
+
+    private String missingPhysicalNameSuggestion(GenericValidationConfig.TableConfig table) {
+        return yamlSuggestion(
+                "请在表模式下补充真实物理表名；如果你想直接写查询，请改用 sql 字段。",
+                "tables:",
+                "  - logicalName: " + fallbackTableName(table),
+                "    physicalName: " + defaultPhysicalName(table));
+    }
+
+    private String unsafeSqlSuggestion(GenericValidationConfig.TableConfig table) {
+        String selectFields = String.join(", ", sampleHeaders(table));
+        return yamlSuggestion(
+                "请改成显式字段的单条只读 SELECT，不要使用 SELECT *、多语句或写操作。",
+                "tables:",
+                "  - logicalName: " + fallbackTableName(table),
+                "    sql: |",
+                "      SELECT " + selectFields,
+                "      FROM " + defaultSqlFrom(table));
+    }
+
+    private String missingTemplateParamsSuggestion(String templateCode) {
+        if (FIELD_TEMPLATES.contains(templateCode)) {
+            return yamlSuggestion(
+                    "请补齐字段类模板的 templateParams。",
+                    "templateParams:",
+                    "  tableName: contract_bill",
+                    "  fields: [receivable_amount]");
+        }
+        if ("ROW_EXPRESSION".equals(templateCode)) {
+            return yamlSuggestion(
+                    "请补齐行表达式模板参数。",
+                    "templateParams:",
+                    "  tableName: contract_bill",
+                    "  conditions:",
+                    "    - left: { field: receivable_amount }",
+                    "      operator: '=='",
+                    "      right: { field: contract_amount }");
+        }
+        return yamlSuggestion(
+                "请按模板要求补齐 templateParams，至少包含表名和模板必填字段。",
+                "templateParams:",
+                "  tableName: contract_bill");
+    }
+
+    private String unknownTableSuggestion(String path, Map<String, List<String>> tableFields) {
+        return yamlSuggestion(
+                "请把该值改成 source.yml 里已声明的表名。当前可选: " + String.join(", ", tableFields.keySet()),
+                "templateParams:",
+                "  " + parameterName(path) + ": " + firstTableName(tableFields));
+    }
+
+    private String unknownFieldSuggestion(String path, String table, Map<String, List<String>> tableFields) {
+        List<String> knownFields = tableFields.get(table);
+        return yamlSuggestion(
+                "请改成 source.yml 中表 " + table + " 的已声明字段。当前可选: " + String.join(", ", knownFields),
+                "templateParams:",
+                "  " + ruleFieldReplacement(path, firstKnownField(knownFields)));
+    }
+
+    private String ruleFieldReplacement(String path, String sampleField) {
+        String name = parameterName(path);
+        if ("fields".equals(name) || "groupBy".equals(name)) {
+            return name + ": [" + sampleField + "]";
+        }
+        return name + ": " + sampleField;
+    }
+
+    private String firstTableName(Map<String, List<String>> tableFields) {
+        for (String tableName : tableFields.keySet()) {
+            if (!isBlank(tableName)) {
+                return tableName;
+            }
+        }
+        return "contract_bill";
+    }
+
+    private String firstKnownField(List<String> fields) {
+        if (fields != null) {
+            for (String field : fields) {
+                if (!isBlank(field) && !looksLikeIdentifierField(field)) {
+                    return field;
+                }
+            }
+            for (String field : fields) {
+                if (!isBlank(field)) {
+                    return field;
+                }
+            }
+        }
+        return "bill_id";
+    }
+
+    private boolean looksLikeIdentifierField(String field) {
+        String normalized = value(field).trim().toLowerCase();
+        return normalized.endsWith("_id")
+                || "id".equals(normalized)
+                || normalized.endsWith("id")
+                || normalized.contains("编号");
+    }
+
+    private String fallbackField(List<String> headers, String primaryKey) {
+        if (headers != null) {
+            for (String header : headers) {
+                if (!isBlank(header) && !header.equals(primaryKey)) {
+                    return header;
+                }
+            }
+        }
+        return "receivable_amount";
+    }
+
+    private String fallbackTableName(GenericValidationConfig.TableConfig table) {
+        return isBlank(table.getLogicalName()) ? "contract_bill" : table.getLogicalName();
+    }
+
+    private String defaultPhysicalName(GenericValidationConfig.TableConfig table) {
+        return "billing." + fallbackTableName(table);
+    }
+
+    private String defaultSqlFrom(GenericValidationConfig.TableConfig table) {
+        if (!isBlank(table.getPhysicalName())) {
+            return table.getPhysicalName();
+        }
+        return defaultPhysicalName(table);
+    }
+
+    private List<String> sampleHeaders(GenericValidationConfig.TableConfig table) {
+        List<String> headers = new ArrayList<>();
+        if (table.getHeaders() != null) {
+            for (String header : table.getHeaders()) {
+                if (!isBlank(header)) {
+                    headers.add(header);
+                }
+                if (headers.size() == 3) {
+                    break;
+                }
+            }
+        }
+        if (headers.isEmpty()) {
+            headers.add("bill_id");
+            headers.add("receivable_amount");
+        }
+        return headers;
+    }
+
+    private String safeIdentifier(String value, String fallback) {
+        if (isBlank(value)) {
+            return fallback;
+        }
+        try {
+            SqlReadOnlyGuard.requireIdentifier(value);
+            return value;
+        } catch (BadRequestException ex) {
+            return fallback;
+        }
+    }
+
+    private String parameterName(String path) {
+        String name = path == null ? "" : path;
+        int dot = name.lastIndexOf('.');
+        if (dot >= 0) {
+            name = name.substring(dot + 1);
+        }
+        int bracket = name.indexOf('[');
+        if (bracket >= 0) {
+            name = name.substring(0, bracket);
+        }
+        if (isBlank(name)) {
+            return "tableName";
+        }
+        return name;
+    }
+
+    private String yamlSuggestion(String intro, String... lines) {
+        return intro + "\n例如：\n" + String.join("\n", lines);
     }
 
     private GenericValidationConfig loadConfig(Path path, GenericLintResult result) {

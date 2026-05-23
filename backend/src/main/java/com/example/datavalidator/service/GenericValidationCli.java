@@ -61,6 +61,9 @@ public class GenericValidationCli {
             if ("lint".equals(args[0])) {
                 return runLint(args);
             }
+            if ("init".equals(args[0])) {
+                return runInit(args);
+            }
             printUsage();
             return 3;
         } catch (BadRequestException | IllegalArgumentException ex) {
@@ -163,6 +166,20 @@ public class GenericValidationCli {
         return result.isValid() ? 0 : 3;
     }
 
+    private int runInit(String[] args) throws Exception {
+        if (args.length < 2 || isBlank(args[1])) {
+            throw new BadRequestException("init 仅支持 jdbc 子命令");
+        }
+        if (!"jdbc".equals(args[1])) {
+            throw new BadRequestException("暂不支持的 init 子命令: " + args[1] + "，当前仅支持 jdbc");
+        }
+        Path outputDir = Path.of(requiredOption(args, "--output")).toAbsolutePath().normalize();
+        Map<String, String> files = GenericJdbcInitTemplates.files(option(args, "--template"));
+        writeInitFiles(outputDir, files);
+        System.out.println("初始化完成: " + outputDir);
+        return 0;
+    }
+
     private void printSummary(GenericValidationResult result) {
         System.out.println("校验完成");
         System.out.println("规则: " + result.getExecutedRules() + "/" + result.getTotalRules());
@@ -218,6 +235,22 @@ public class GenericValidationCli {
         error.put("message", message == null ? "" : message);
         summary.put("error", error);
         return summary;
+    }
+
+    private void writeInitFiles(Path outputDir, Map<String, String> files) throws Exception {
+        if (Files.exists(outputDir) && !Files.isDirectory(outputDir)) {
+            throw new BadRequestException("--output 必须指向目录: " + outputDir);
+        }
+        for (String fileName : files.keySet()) {
+            Path target = outputDir.resolve(fileName);
+            if (Files.exists(target)) {
+                throw new BadRequestException("目标文件已存在，init 默认不会覆盖: " + target);
+            }
+        }
+        Files.createDirectories(outputDir);
+        for (Map.Entry<String, String> entry : files.entrySet()) {
+            Files.writeString(outputDir.resolve(entry.getKey()), entry.getValue());
+        }
     }
 
     private void applyCiOptions(String[] args, GenericValidationConfig config) {
@@ -297,7 +330,22 @@ public class GenericValidationCli {
         if (result == null || isBlank(result.getTemplateCode()) || result.getTemplateParams().isEmpty()) {
             return false;
         }
-        return !"LOW".equalsIgnoreCase(firstText(result.getConfidence(), ""));
+        if ("LOW".equalsIgnoreCase(firstText(result.getConfidence(), ""))) {
+            return false;
+        }
+        for (String category : warningCategories(result)) {
+            if (blocksCandidateGeneration(category)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean blocksCandidateGeneration(String warningCategory) {
+        return "AI降级".equals(warningCategory)
+                || "字段缺失".equals(warningCategory)
+                || "模板不支持".equals(warningCategory)
+                || "安全拒绝".equals(warningCategory);
     }
 
     private GenericRulePackage.GenericRule recommendedRule(
@@ -565,5 +613,6 @@ public class GenericValidationCli {
         System.out.println("  data-validator recommend --rules rules.yml --metadata source.yml --output recommendations.json [--candidate-rules rules.recommended.yml] [--debug-ai debug-dir]");
         System.out.println("  data-validator lint --config validator.yml");
         System.out.println("  data-validator lint --rules rules.yml --metadata source.yml");
+        System.out.println("  data-validator init jdbc [--template order-fulfillment] --output <dir>");
     }
 }

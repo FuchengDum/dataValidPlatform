@@ -9,4 +9,9 @@ class DataValidatorApplicationTest {
     void versionFlagUsesCliMode() {
         assertThat(DataValidatorApplication.isCli(new String[] {"--version"})).isTrue();
     }
+
+    @Test
+    void initCommandUsesCliMode() {
+        assertThat(DataValidatorApplication.isCli(new String[] {"init", "jdbc"})).isTrue();
+    }
 }

@@ -208,6 +208,36 @@ class GenericValidationRunnerTest {
     }
 
     @Test
+    void genericJdbcRuleSnippetLibraryCanBeLintedAndExecuted() {
+        Path source = Path.of("../examples/generic-jdbc/source.yml");
+        Path snippets = Path.of("../examples/generic-jdbc/rule-snippets.yml");
+        GenericRuleAssetLoader loader = new GenericRuleAssetLoader(new ObjectMapper());
+
+        GenericLintResult lint = new GenericValidationLinter(loader).lintRules(snippets, source);
+        GenericValidationConfig config = new GenericValidationConfig();
+        config.setSource(loader.loadSource(source));
+        config.getRules().setFile(snippets.toAbsolutePath().toString());
+        config.getValidation().setNoReport(true);
+
+        GenericValidationResult result = runner().run(config, snippets.toAbsolutePath().getParent());
+
+        assertThat(lint.isValid()).isTrue();
+        assertThat(loader.loadRules(snippets).getRules())
+                .extracting(GenericRulePackage.GenericRule::getTemplateCode)
+                .containsExactly(
+                        "NOT_NULL",
+                        "NON_NEGATIVE",
+                        "NUMERIC_TYPE",
+                        "ROW_EXPRESSION",
+                        "RELATION_EXISTS",
+                        "JOIN_ASSERT",
+                        "AGGREGATE_ASSERT",
+                        "DUPLICATE_CHECK");
+        assertThat(result.getExecutedRules()).isEqualTo(8);
+        assertThat(result.getSourceSummary().getTableCount()).isEqualTo(2);
+    }
+
+    @Test
     void rejectsDangerousSqlInput() {
         assertThatThrownBy(() -> SqlReadOnlyGuard.requireSelect("UPDATE t_order SET amount = 0"))
                 .isInstanceOf(BadRequestException.class)

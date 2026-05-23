@@ -27,6 +27,18 @@ java -jar target/data-validator-0.1.0.jar run --config ../examples/generic-jdbc/
 
 默认报告格式包含 JSON、Markdown 和 JUnit XML。CLI 返回退出码 `2` 表示发现达到失败等级的数据异常，不表示工具执行失败。
 
+## 规则片段库
+
+`rule-snippets.yml` 提供 8 类可复制规则片段：非空、非负、数值类型、金额关系、跨表存在、关联断言、聚合一致性和重复校验。片段说明见仓库根目录 `通用数据验证规则片段库.md`。
+
+验证片段库：
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.arguments="lint --rules ../examples/generic-jdbc/rule-snippets.yml --metadata ../examples/generic-jdbc/source.yml"
+mvn spring-boot:run -Dspring-boot.run.arguments="validate --rules ../examples/generic-jdbc/rule-snippets.yml --source ../examples/generic-jdbc/source.yml --output ../examples/generic-jdbc/reports"
+```
+
 MySQL 配置请从 `mysql-template.yml` 复制到自己的 `source.yml`，并设置只读账号密码环境变量：
 
 ```bash

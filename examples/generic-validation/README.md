@@ -43,6 +43,8 @@ java -jar target/data-validator-0.1.0.jar run --config ../examples/generic-valid
 
 生成规则绑定推荐：
 
+优先使用仓库根目录 `通用数据验证规则片段库.md` 中的规则片段。片段库无法覆盖时，再把 `recommend` 作为补充入口生成候选规则。详细边界见 `通用数据验证AI推荐补充入口.md`。
+
 ```bash
 cd backend
 mvn spring-boot:run -Dspring-boot.run.arguments="recommend --rules ../examples/generic-validation/rules.yml --metadata ../examples/generic-validation/source.yml --output ../examples/generic-validation/reports/recommendations.json --candidate-rules ../examples/generic-validation/reports/rules.recommended.yml"
