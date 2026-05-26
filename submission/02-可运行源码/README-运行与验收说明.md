@@ -9,7 +9,7 @@
 |---|---|
 | `backend/` | Spring Boot 后端、Web API、CLI、规则执行与测试 |
 | `frontend/` | Vue 3 Web 工作台 |
-| `bin/data-validator` | CLI 启动脚本 |
+| `bin/data-validator`、`bin/data-validator.cmd` | Linux/macOS 与 Windows CLI 启动脚本 |
 | `examples/case5-seed/` | 赛题5固定复现样例 |
 | `examples/generic-jdbc/` | 非订单 JDBC 通用扩展示例 |
 | `examples/generic-validation/` | 最小通用规则执行示例 |
@@ -27,6 +27,11 @@
 
 核心校验不依赖 AI 模型或 API Key。未启用模型时，AI 辅助位置可返回本地
 规则化结果，便于稳定演示。
+
+本目录交付的是源码，`backend/target/data-validator-0.1.0.jar` 不属于源码
+文件。将源码 zip 解压到另一台机器后，必须先执行后文 Maven 构建命令；
+若需交付“解压即运行”的压缩包，则应在构建后将该 Jar 一并放入
+`backend/target/`。
 
 ## 3. Web 工作台验收路径
 
@@ -82,6 +87,15 @@ cd backend
 
 ```bash
 ../bin/data-validator run --config ../examples/generic-jdbc/validator.yml --json --no-report
+```
+
+Windows PowerShell 或 `cmd.exe` 请使用 `.cmd` 入口，不能直接执行无扩展名
+的 Unix shell 脚本：
+
+```bat
+cd backend
+..\bin\data-validator.cmd lint --config ..\examples\generic-jdbc\validator.yml
+..\bin\data-validator.cmd run --config ..\examples\generic-jdbc\validator.yml --json --no-report
 ```
 
 该样例使用 `contract_bill` 与 `payment` 表以及通用规则包；预期命中

@@ -1,10 +1,10 @@
-# 通用数据验证 AI 推荐补充入口
+# 通用数据验证工具-CLI-AI推荐补充入口
 
 本文档说明 `recommend` 的使用边界。当前阶段的原则是：规则片段库优先，AI 或本地语义推荐作为补充入口，只生成可审阅候选，不自动接入门禁，也不自动覆盖正式规则包。
 
 ## 推荐使用顺序
 
-1. 先查 `通用数据验证规则片段库.md`，能用片段表达的规则，优先复制片段并替换表名、字段名和 `ruleId`。
+1. 先查 `通用数据验证工具-CLI-规则片段库.md`，能用片段表达的规则，优先复制片段并替换表名、字段名和 `ruleId`。
 2. 复制后先运行 `lint --rules ... --metadata ...`，让 lint 指出字段、表名或模板结构问题。
 3. 片段库无法覆盖时，再运行 `recommend --rules ... --metadata ... --candidate-rules ...` 生成候选。
 4. 人工审阅推荐 JSON 的 `diff`、`confidence`、`warningCategories`、`warningDetails` 和 `candidateGenerated`。

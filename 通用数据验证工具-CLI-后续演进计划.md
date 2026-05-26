@@ -1,4 +1,4 @@
-# 通用数据验证工具后续演进计划
+# 通用数据验证工具-CLI-后续演进计划
 
 ## 1. 当前定位
 
@@ -247,7 +247,7 @@ mvn spring-boot:run -Dspring-boot.run.arguments="run --config ../examples/generi
 
 阶段 5 到阶段 14 已完成第一版，当前工具已经具备通用 CLI、规则包、文件源、JDBC 只读源、报告契约、AI 推荐、基础分发、快速上手、片段扩展和 Case5/V3 CLI 复现能力。后续路线从“能跑通”转向“稳定好用、易排错、易复用”。
 
-质量门禁、CI 摘要、规则覆盖摘要和流水线接入先单独规划，不阻塞当前易用性建设。详见 `通用数据验证工具质量门禁后续计划.md`。
+质量门禁、CI 摘要、规则覆盖摘要和流水线接入先单独规划，不阻塞当前易用性建设。详见 `通用数据验证工具-CLI-质量门禁后续计划.md`。
 
 推荐优先级：
 
@@ -501,7 +501,7 @@ examples/distribution-minimal/
 
 实际落地：
 
-1. 新增 `通用数据验证规则片段库.md`，覆盖非空、非负、数值类型、金额关系、跨表存在、关联断言、聚合一致性和重复校验 8 类片段。
+1. 新增 `通用数据验证工具-CLI-规则片段库.md`，覆盖非空、非负、数值类型、金额关系、跨表存在、关联断言、聚合一致性和重复校验 8 类片段。
 2. 新增 `examples/generic-jdbc/rule-snippets.yml`，作为可被工具直接读取、lint 和执行的片段规则包。
 3. `examples/generic-jdbc/README.md` 增加规则片段库入口和验证命令。
 4. 新增回归测试，确认片段库映射到现有模板、lint 有效，并能基于 `examples/generic-jdbc/source.yml` 执行。
@@ -534,7 +534,7 @@ examples/distribution-minimal/
 
 实际落地：
 
-1. 新增 `通用数据验证AI推荐补充入口.md`，明确规则片段库优先、`recommend` 作为补充入口。
+1. 新增 `通用数据验证工具-CLI-AI推荐补充入口.md`，明确规则片段库优先、`recommend` 作为补充入口。
 2. `examples/generic-validation/README.md` 增加推荐入口说明，提醒候选规则需要人工审阅。
 3. 收紧候选生成门禁：AI 降级、字段缺失、模板不支持、安全拒绝时，只输出推荐 JSON，不写入可执行候选规则。
 4. 保留 AI 关闭时的本地语义推荐，继续输出 `diff`、`confidence`、`warningCategories`、`warningDetails` 和 `candidateGenerated`。
@@ -601,7 +601,7 @@ examples/distribution-minimal/
 
 ## 6. 暂缓事项
 
-1. 质量门禁、gate summary、CI 模板和覆盖摘要单独进入 `通用数据验证工具质量门禁后续计划.md`。
+1. 质量门禁、gate summary、CI 模板和覆盖摘要单独进入 `通用数据验证工具-CLI-质量门禁后续计划.md`。
 2. 文件数据源容量与 CSV 方言增强暂缓。
 3. Web 工作台通用规则包接入暂缓。
 

@@ -25,11 +25,21 @@ java -jar target/data-validator-0.1.0.jar run --config ../examples/generic-jdbc/
 
 当前 H2 样例会通过 `INIT=RUNSCRIPT` 初始化内存库。`contract_bill` 使用表模式，工具生成显式字段 SQL；`payment` 使用 SQL 模式，SQL 必须显式声明列名或别名。
 
+源码压缩包不包含 `backend/target/data-validator-0.1.0.jar` 时，需要先在
+`backend/` 目录执行 `mvn package -DskipTests`。Windows 下请从同一目录
+使用批处理入口执行 CLI：
+
+```bat
+cd backend
+..\bin\data-validator.cmd lint --config ..\examples\generic-jdbc\validator.yml
+..\bin\data-validator.cmd run --config ..\examples\generic-jdbc\validator.yml --json --no-report
+```
+
 默认报告格式包含 JSON、Markdown 和 JUnit XML。CLI 返回退出码 `2` 表示发现达到失败等级的数据异常，不表示工具执行失败。
 
 ## 规则片段库
 
-`rule-snippets.yml` 提供 8 类可复制规则片段：非空、非负、数值类型、金额关系、跨表存在、关联断言、聚合一致性和重复校验。片段说明见仓库根目录 `通用数据验证规则片段库.md`。
+`rule-snippets.yml` 提供 8 类可复制规则片段：非空、非负、数值类型、金额关系、跨表存在、关联断言、聚合一致性和重复校验。片段说明见仓库根目录 `通用数据验证工具-CLI-规则片段库.md`。
 
 验证片段库：
 
