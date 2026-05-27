@@ -1,241 +1,236 @@
 <template>
-  <main class="page-shell">
-    <header class="topbar">
-      <div>
-        <h1>业务数据准确性验证工具</h1>
-        <p>赛题5 · Excel 导入 · 规则校验 · 异常证据链 · 报告导出</p>
+  <div class="app-container">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <span class="logo-icon">🔍</span>
+          <span class="logo-text">数据校验工具</span>
+        </div>
+        <p class="logo-subtitle">业务数据准确性验证</p>
       </div>
-      <div class="actions">
-        <label class="file-button">
-          <input type="file" accept=".xlsx" @change="onFileChange" />
-          选择 Excel
-        </label>
-        <button :disabled="!dataset || loading" @click="validate">开始校验</button>
-        <button :disabled="!job || loading" @click="exportReport">导出报告</button>
-      </div>
-    </header>
-
-    <section class="status-line" v-if="message || error">
-      <span class="message" v-if="message">{{ message }}</span>
-      <span class="error" v-if="error">{{ error }}</span>
-    </section>
-
-    <section class="summary-grid">
-      <article class="metric">
-        <span>业务表</span>
-        <strong>{{ dataset?.businessTableCount ?? '-' }}</strong>
-      </article>
-      <article class="metric">
-        <span>规则数</span>
-        <strong>{{ dataset?.ruleCount ?? '-' }}</strong>
-      </article>
-      <article class="metric">
-        <span>异常总数</span>
-        <strong>{{ summary?.findingCount ?? '-' }}</strong>
-      </article>
-      <article class="metric danger">
-        <span>严重</span>
-        <strong>{{ summary?.criticalCount ?? '-' }}</strong>
-      </article>
-      <article class="metric warn">
-        <span>警告</span>
-        <strong>{{ summary?.warningCount ?? '-' }}</strong>
-      </article>
-      <article class="metric">
-        <span>耗时 ms</span>
-        <strong>{{ summary?.durationMillis ?? '-' }}</strong>
-      </article>
-    </section>
-
-    <section class="workspace">
-      <aside class="side-panel">
-        <h2>筛选</h2>
-        <label>
-          严重等级
-          <select v-model="filters.severity" @change="loadFindings">
-            <option value="">全部</option>
-            <option value="CRITICAL">严重</option>
-            <option value="WARNING">警告</option>
-          </select>
-        </label>
-        <label>
-          业务表
-          <select v-model="filters.tableName" @change="loadFindings">
-            <option value="">全部</option>
-            <option value="t_order">t_order</option>
-            <option value="t_order_item">t_order_item</option>
-            <option value="t_product">t_product</option>
-            <option value="t_payment">t_payment</option>
-            <option value="t_inventory_log">t_inventory_log</option>
-          </select>
-        </label>
-        <label>
-          规则编号
-          <input v-model.trim="filters.ruleId" placeholder="例如 R006" @keyup.enter="loadFindings" />
-        </label>
-        <button :disabled="!job" @click="loadFindings">刷新列表</button>
-
-        <h2>规则覆盖</h2>
-        <div class="rule-list">
-          <div v-for="rule in rules" :key="rule.ruleId" class="rule-item">
-            <strong>{{ rule.ruleId }}</strong>
-            <span>{{ rule.ruleName }}</span>
+      
+      <nav class="sidebar-nav">
+        <router-link 
+          v-for="item in navItems" 
+          :key="item.path"
+          :to="item.path" 
+          class="nav-item"
+          :class="{ active: $route.path === item.path }"
+        >
+          <span class="nav-icon">{{ item.icon }}</span>
+          <span class="nav-text">{{ item.label }}</span>
+          <span v-if="item.badge" class="nav-badge">{{ item.badge }}</span>
+        </router-link>
+      </nav>
+      
+      <div class="sidebar-footer">
+        <div v-if="store.state.dataset" class="dataset-info">
+          <div class="dataset-label">当前数据</div>
+          <div class="dataset-details">
+            <span class="dataset-stat">📊 {{ store.state.dataset.businessTableCount }} 表</span>
+            <span class="dataset-stat">📋 {{ store.state.rules.length }} 规则</span>
           </div>
         </div>
-      </aside>
-
-      <section class="table-panel">
-        <div class="panel-head">
-          <h2>异常疑点清单</h2>
-          <span>{{ findings.length }} 条</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>规则</th>
-                <th>等级</th>
-                <th>表</th>
-                <th>主键</th>
-                <th>描述</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="item in findings" :key="item.findingId" @click="selectFinding(item.findingId)">
-                <td>{{ item.ruleId }}</td>
-                <td><span :class="['tag', item.severity]">{{ labelSeverity(item.severity) }}</span></td>
-                <td>{{ item.tableName }}</td>
-                <td>{{ item.recordKey }}</td>
-                <td>{{ item.description }}</td>
-              </tr>
-              <tr v-if="findings.length === 0">
-                <td colspan="5" class="empty">暂无异常，请先上传并校验 Excel</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <aside class="detail-panel">
-        <h2>异常详情</h2>
-        <template v-if="detail">
-          <dl>
-            <dt>规则</dt>
-            <dd>{{ detail.finding.ruleId }} {{ detail.finding.ruleName }}</dd>
-            <dt>记录</dt>
-            <dd>{{ detail.finding.tableName }} / {{ detail.finding.recordKey }}</dd>
-            <dt>实际值</dt>
-            <dd>{{ detail.finding.actualValue }}</dd>
-            <dt>期望值</dt>
-            <dd>{{ detail.finding.expectedValue }}</dd>
-            <dt>原因</dt>
-            <dd>{{ detail.finding.reason }}</dd>
-            <dt>影响</dt>
-            <dd>{{ detail.finding.impact }}</dd>
-            <dt>建议</dt>
-            <dd>{{ detail.finding.suggestion }}</dd>
-          </dl>
-          <h3>证据</h3>
-          <div v-for="evidence in detail.evidences" :key="evidence.id" class="evidence">
-            {{ evidence.evidenceType }} · {{ evidence.fieldName }} · {{ evidence.calculation }}
-          </div>
-        </template>
-        <p v-else class="empty">点击异常行查看证据链</p>
-      </aside>
-    </section>
-  </main>
+        <div class="divider"></div>
+        <button v-if="store.state.dataset" class="reset-btn" @click="resetAll">
+          开始新校验
+        </button>
+      </div>
+    </aside>
+    
+    <main class="main-content">
+      <div class="content-inner">
+        <router-view></router-view>
+      </div>
+    </main>
+  </div>
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
-import {
-  createReport,
-  fetchFindingDetail,
-  fetchFindings,
-  fetchRules,
-  fetchSummary,
-  reportDownloadUrl,
-  startValidation,
-  uploadWorkbook
-} from './api/client'
+import { computed } from 'vue'
+import { useRouter } from 'vue-router'
+import store from './store'
 
-const dataset = ref(null)
-const job = ref(null)
-const summary = ref(null)
-const findings = ref([])
-const rules = ref([])
-const detail = ref(null)
-const message = ref('')
-const error = ref('')
-const loading = ref(false)
-const filters = reactive({
-  severity: '',
-  tableName: '',
-  ruleId: ''
-})
+const router = useRouter()
 
-async function run(action, successMessage) {
-  loading.value = true
-  error.value = ''
-  message.value = ''
-  try {
-    const result = await action()
-    message.value = successMessage
-    return result
-  } catch (err) {
-    error.value = err.message || '操作失败'
-    return null
-  } finally {
-    loading.value = false
-  }
-}
+const navItems = computed(() => [
+  { path: '/', icon: '🏠', label: '首页' },
+  { path: '/upload', icon: '📤', label: '数据上传', badge: store.state.dataset ? '✓' : null },
+  { path: '/rules', icon: '⚙️', label: '规则配置', badge: store.state.rules.length > 0 ? store.state.rules.length : null },
+  { path: '/validation', icon: '✅', label: '数据校验', badge: store.state.job ? '✓' : null },
+  { path: '/findings', icon: '⚠️', label: '异常分析', badge: store.state.findings.length > 0 ? store.state.findings.length : null },
+  { path: '/report', icon: '📄', label: '报告导出' }
+])
 
-async function onFileChange(event) {
-  const file = event.target.files?.[0]
-  if (!file) return
-  const result = await run(() => uploadWorkbook(file), 'Excel 导入完成')
-  if (result) {
-    dataset.value = result
-    job.value = null
-    summary.value = null
-    findings.value = []
-    detail.value = null
-    rules.value = await fetchRules(result.datasetId)
-  }
-}
-
-async function validate() {
-  const result = await run(() => startValidation(dataset.value.datasetId, false), '校验完成')
-  if (result) {
-    job.value = result
-    summary.value = await fetchSummary(result.jobId)
-    await loadFindings()
-  }
-}
-
-async function loadFindings() {
-  if (!job.value) return
-  const result = await run(() => fetchFindings(job.value.jobId, filters), '异常列表已刷新')
-  if (result) {
-    findings.value = result.items
-  }
-}
-
-async function selectFinding(findingId) {
-  const result = await run(() => fetchFindingDetail(findingId), '异常详情已加载')
-  if (result) {
-    detail.value = result
-  }
-}
-
-async function exportReport() {
-  const result = await run(() => createReport(job.value.jobId, 'MARKDOWN'), '报告已生成')
-  if (result) {
-    window.open(reportDownloadUrl(result.reportId), '_blank')
-  }
-}
-
-function labelSeverity(severity) {
-  return severity === 'CRITICAL' ? '严重' : '警告'
+function resetAll() {
+  store.actions.clearState()
+  router.push('/')
 }
 </script>
+
+<style scoped>
+.app-container {
+  display: flex;
+  min-height: 100vh;
+  background: #f5f7fb;
+}
+
+.sidebar {
+  width: 260px;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  left: 0;
+  top: 0;
+  height: 100vh;
+  z-index: 100;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.1);
+}
+
+.sidebar-header {
+  padding: 28px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.logo-icon {
+  font-size: 32px;
+}
+
+.logo-text {
+  font-size: 20px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.logo-subtitle {
+  font-size: 13px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.sidebar-nav {
+  flex: 1;
+  padding: 20px 16px;
+  overflow-y: auto;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  color: #94a3b8;
+  text-decoration: none;
+  margin-bottom: 6px;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+}
+
+.nav-item.active {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.3);
+}
+
+.nav-icon {
+  font-size: 20px;
+}
+
+.nav-text {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.nav-badge {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.nav-item.active .nav-badge {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.sidebar-footer {
+  padding: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.dataset-info {
+  margin-bottom: 16px;
+}
+
+.dataset-label {
+  font-size: 12px;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.dataset-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dataset-stat {
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 16px 0;
+}
+
+.reset-btn {
+  width: 100%;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: transparent;
+  color: #94a3b8;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.reset-btn:hover {
+  border-color: #ef4444;
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.main-content {
+  flex: 1;
+  margin-left: 260px;
+}
+
+.content-inner {
+  min-height: 100vh;
+}
+</style>

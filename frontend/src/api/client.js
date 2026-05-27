@@ -45,8 +45,39 @@ export async function fetchFindingDetail(findingId) {
   return parseResponse(await fetch(`${API_BASE}/api/findings/${findingId}`))
 }
 
+export async function analyzeFinding(findingId) {
+  return parseResponse(await fetch(`${API_BASE}/api/ai/findings/${findingId}/analysis`))
+}
+
+export async function draftValidationSql(request) {
+  return parseResponse(await fetch(`${API_BASE}/api/ai/sql-drafts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request)
+  }))
+}
+
+export async function recommendRuleBinding(datasetId, ruleId) {
+  return parseResponse(await fetch(`${API_BASE}/api/ai/rule-binding/recommend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ datasetId, ruleId })
+  }))
+}
+
 export async function fetchRules(datasetId) {
   return parseResponse(await fetch(`${API_BASE}/api/rules?datasetId=${encodeURIComponent(datasetId)}`))
+}
+
+export async function updateRuleBinding(datasetId, ruleId, binding) {
+  return parseResponse(await fetch(
+    `${API_BASE}/api/rules/${encodeURIComponent(datasetId)}/${encodeURIComponent(ruleId)}/binding`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(binding)
+    }
+  ))
 }
 
 export async function createReport(jobId, format = 'MARKDOWN') {

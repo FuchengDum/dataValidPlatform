@@ -8,23 +8,36 @@ import com.example.datavalidator.domain.RuleDefinition;
 import com.example.datavalidator.domain.Severity;
 import com.example.datavalidator.domain.WorkbookDataset;
 import com.example.datavalidator.exception.BadRequestException;
-import com.example.datavalidator.persistence.DataRowSnapshotEntity;
 import com.example.datavalidator.persistence.DataTableSnapshotEntity;
 import com.example.datavalidator.persistence.DatasetEntity;
+import com.example.datavalidator.persistence.RuleBindingEntity;
 import com.example.datavalidator.persistence.RuleDefinitionEntity;
 import com.example.datavalidator.repository.DataRowSnapshotRepository;
 import com.example.datavalidator.repository.DataTableSnapshotRepository;
 import com.example.datavalidator.repository.DatasetRepository;
+import com.example.datavalidator.repository.RuleBindingRepository;
 import com.example.datavalidator.repository.RuleDefinitionRepository;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.OutputKeys;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -34,6 +47,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 @Service
 public class ExcelImportService {
@@ -57,18 +73,24 @@ public class ExcelImportService {
     private final DataTableSnapshotRepository tableRepository;
     private final DataRowSnapshotRepository rowRepository;
     private final RuleDefinitionRepository ruleRepository;
+    private final RuleBindingRepository bindingRepository;
     private final JsonService jsonService;
+    private final BusinessTableDataProvider businessTableDataProvider;
 
     public ExcelImportService(DatasetRepository datasetRepository,
                               DataTableSnapshotRepository tableRepository,
                               DataRowSnapshotRepository rowRepository,
                               RuleDefinitionRepository ruleRepository,
-                              JsonService jsonService) {
+                              RuleBindingRepository bindingRepository,
+                              JsonService jsonService,
+                              BusinessTableDataProvider businessTableDataProvider) {
         this.datasetRepository = datasetRepository;
         this.tableRepository = tableRepository;
         this.rowRepository = rowRepository;
         this.ruleRepository = ruleRepository;
+        this.bindingRepository = bindingRepository;
         this.jsonService = jsonService;
+        this.businessTableDataProvider = businessTableDataProvider;
     }
 
     @Transactional
@@ -81,7 +103,7 @@ public class ExcelImportService {
             throw new BadRequestException("仅支持 .xlsx 文件");
         }
 
-        try (InputStream inputStream = file.getInputStream(); Workbook workbook = WorkbookFactory.create(inputStream)) {
+        try (InputStream inputStream = file.getInputStream(); Workbook workbook = openWorkbook(inputStream)) {
             validateSheets(workbook);
             String datasetId = IdFactory.next("ds");
             WorkbookDataset dataset = new WorkbookDataset();
@@ -89,10 +111,7 @@ public class ExcelImportService {
             dataset.setFileName(fileName);
             dataset.setSourceName(fileName);
 
-            for (Map.Entry<String, String> entry : BUSINESS_SHEETS.entrySet()) {
-                DataTable table = readBusinessTable(workbook.getSheet(entry.getKey()), entry.getKey(), entry.getValue());
-                dataset.getBusinessTables().put(entry.getValue(), table);
-            }
+            dataset.setBusinessTables(businessTableDataProvider.loadAllTables());
 
             Map<String, List<String>> scenarioMap = readScenarioMap(workbook.getSheet("校验场景覆盖矩阵"));
             List<RuleDefinition> rules = readRules(workbook.getSheet("业务规则库"), scenarioMap);
@@ -108,6 +127,69 @@ public class ExcelImportService {
         }
     }
 
+    private Workbook openWorkbook(InputStream inputStream) throws Exception {
+        byte[] workbookBytes = inputStream.readAllBytes();
+        return WorkbookFactory.create(new ByteArrayInputStream(removeNullTargetRelationships(workbookBytes)));
+    }
+
+    private byte[] removeNullTargetRelationships(byte[] workbookBytes) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        boolean hasEntries = false;
+        boolean changed = false;
+        try (ZipInputStream zipInput = new ZipInputStream(new ByteArrayInputStream(workbookBytes));
+             ZipOutputStream zipOutput = new ZipOutputStream(output)) {
+            ZipEntry entry;
+            while ((entry = zipInput.getNextEntry()) != null) {
+                hasEntries = true;
+                zipOutput.putNextEntry(new ZipEntry(entry.getName()));
+                byte[] entryBytes = zipInput.readAllBytes();
+                if (entry.getName().endsWith(".rels")) {
+                    byte[] cleanedBytes = removeNullTargetRelationshipNodes(entryBytes);
+                    changed = changed || cleanedBytes != entryBytes;
+                    entryBytes = cleanedBytes;
+                }
+                zipOutput.write(entryBytes);
+                zipOutput.closeEntry();
+            }
+        }
+        return hasEntries && changed ? output.toByteArray() : workbookBytes;
+    }
+
+    private byte[] removeNullTargetRelationshipNodes(byte[] relationshipBytes) throws Exception {
+        Document document = secureDocumentBuilderFactory().newDocumentBuilder()
+                .parse(new ByteArrayInputStream(relationshipBytes));
+        NodeList relationships = document.getElementsByTagNameNS("*", "Relationship");
+        List<Node> invalidNodes = new ArrayList<>();
+        for (int index = 0; index < relationships.getLength(); index++) {
+            Element relationship = (Element) relationships.item(index);
+            if ("NULL".equalsIgnoreCase(relationship.getAttribute("Target").trim())) {
+                invalidNodes.add(relationship);
+            }
+        }
+        if (invalidNodes.isEmpty()) {
+            return relationshipBytes;
+        }
+        for (Node node : invalidNodes) {
+            node.getParentNode().removeChild(node);
+        }
+        Transformer transformer = TransformerFactory.newInstance().newTransformer();
+        transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        transformer.transform(new DOMSource(document), new StreamResult(output));
+        return output.toByteArray();
+    }
+
+    private DocumentBuilderFactory secureDocumentBuilderFactory() throws Exception {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(true);
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        factory.setXIncludeAware(false);
+        factory.setExpandEntityReferences(false);
+        return factory;
+    }
+
     public WorkbookDataset loadDataset(String datasetId) {
         DatasetEntity datasetEntity = datasetRepository.findById(datasetId)
                 .orElseThrow(() -> new BadRequestException("数据集不存在: " + datasetId));
@@ -118,22 +200,27 @@ public class ExcelImportService {
         dataset.setFileName(datasetEntity.getFileName());
 
         for (DataTableSnapshotEntity tableEntity : tableRepository.findByDatasetId(datasetId)) {
-            DataTable table = new DataTable();
-            table.setSheetName(tableEntity.getSheetName());
-            table.setLogicalName(tableEntity.getLogicalName());
-            table.setSourceType(DatasetSourceType.valueOf(tableEntity.getSourceType()));
-            table.setHeaders(jsonService.readStringList(tableEntity.getHeadersJson()));
-            List<DataRow> rows = rowRepository
-                    .findByDatasetIdAndTableNameOrderByRowIndex(datasetId, tableEntity.getLogicalName())
-                    .stream()
-                    .map(entity -> {
-                        DataRow row = new DataRow();
-                        row.setRowIndex(entity.getRowIndex());
-                        row.setPrimaryKey(entity.getPrimaryKey());
-                        row.setValues(jsonService.readStringMap(entity.getValuesJson()));
-                        return row;
-                    }).collect(Collectors.toList());
-            table.setRows(rows);
+            DataTable table;
+            if (DatasetSourceType.DATABASE_TABLE.name().equals(tableEntity.getSourceType())) {
+                table = businessTableDataProvider.loadTable(tableEntity.getLogicalName());
+            } else {
+                table = new DataTable();
+                table.setSheetName(tableEntity.getSheetName());
+                table.setLogicalName(tableEntity.getLogicalName());
+                table.setSourceType(DatasetSourceType.valueOf(tableEntity.getSourceType()));
+                table.setHeaders(jsonService.readStringList(tableEntity.getHeadersJson()));
+                List<DataRow> rows = rowRepository
+                        .findByDatasetIdAndTableNameOrderByRowIndex(datasetId, tableEntity.getLogicalName())
+                        .stream()
+                        .map(entity -> {
+                            DataRow row = new DataRow();
+                            row.setRowIndex(entity.getRowIndex());
+                            row.setPrimaryKey(entity.getPrimaryKey());
+                            row.setValues(jsonService.readStringMap(entity.getValuesJson()));
+                            return row;
+                        }).collect(Collectors.toList());
+                table.setRows(rows);
+            }
             dataset.getBusinessTables().put(table.getLogicalName(), table);
         }
 
@@ -144,8 +231,8 @@ public class ExcelImportService {
     }
 
     private void validateSheets(Workbook workbook) {
-        List<String> required = new ArrayList<>(BUSINESS_SHEETS.keySet());
-        required.addAll(Arrays.asList("业务规则库", "字段约束说明", "关联逻辑说明", "校验场景覆盖矩阵", "使用说明"));
+        List<String> required = new ArrayList<>(
+                Arrays.asList("业务规则库", "字段约束说明", "关联逻辑说明", "校验场景覆盖矩阵"));
         for (String sheetName : required) {
             if (workbook.getSheet(sheetName) == null) {
                 throw new BadRequestException("缺少必需 sheet：" + sheetName);
@@ -300,17 +387,6 @@ public class ExcelImportService {
             tableEntity.setHeadersJson(jsonService.write(table.getHeaders()));
             tableEntity.setRowCount(table.getRows().size());
             tableRepository.save(tableEntity);
-
-            for (DataRow row : table.getRows()) {
-                DataRowSnapshotEntity rowEntity = new DataRowSnapshotEntity();
-                rowEntity.setId(IdFactory.next("row"));
-                rowEntity.setDatasetId(dataset.getDatasetId());
-                rowEntity.setTableName(table.getLogicalName());
-                rowEntity.setRowIndex(row.getRowIndex());
-                rowEntity.setPrimaryKey(row.getPrimaryKey());
-                rowEntity.setValuesJson(jsonService.write(row.getValues()));
-                rowRepository.save(rowEntity);
-            }
         }
 
         for (RuleDefinition rule : dataset.getRules()) {
@@ -328,7 +404,155 @@ public class ExcelImportService {
             entity.setExecutorType(rule.getExecutorType());
             entity.setTemplateCode(rule.getTemplateCode());
             ruleRepository.save(entity);
+            bindingRepository.save(defaultBinding(dataset.getDatasetId(), rule));
         }
+    }
+
+    private RuleBindingEntity defaultBinding(String datasetId, RuleDefinition rule) {
+        RuleBindingEntity entity = new RuleBindingEntity();
+        entity.setId(IdFactory.next("bind"));
+        entity.setDatasetId(datasetId);
+        entity.setRuleId(rule.getRuleId());
+        entity.setExecutorType("BUILTIN");
+        entity.setBuiltinExecutorName(rule.getRuleId());
+        entity.setTemplateCode(rule.getTemplateCode());
+        entity.setTemplateParamsJson(jsonService.write(defaultTemplateParams(rule.getRuleId())));
+        return entity;
+    }
+
+    private Map<String, Object> defaultTemplateParams(String ruleId) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        switch (ruleId) {
+            case "R001":
+                params.put("tableName", "t_order");
+                params.put("fields", Arrays.asList("订单金额", "实付金额", "优惠金额"));
+                break;
+            case "R002":
+                params.put("tableName", "t_order");
+                params.put("fields", Arrays.asList("用户ID", "订单状态", "下单时间", "收货地址"));
+                break;
+            case "R003":
+                params.put("tableName", "t_order");
+                params.put("fields", Arrays.asList("订单金额", "实付金额"));
+                break;
+            case "R008":
+                params.put("tableName", "t_product");
+                params.put("fields", Arrays.asList("库存数量", "成本价"));
+                break;
+            case "R013":
+                params.put("tableName", "t_payment");
+                params.put("fields", Arrays.asList("支付金额", "退款金额"));
+                break;
+            case "R017":
+            case "R030":
+                params.put("source", "t_order_item");
+                params.put("target", "t_order");
+                params.put("groupBy", Arrays.asList(relationKey("订单ID", "订单ID")));
+                params.put("aggregate", aggregate("SUM", "小计金额"));
+                params.put("assert", aggregateAssert("==", "订单金额", "0.01"));
+                break;
+            case "R019":
+                params.put("source", "t_order_item");
+                params.put("target", "t_product");
+                params.put("keys", Arrays.asList(relationKey("商品ID", "商品ID")));
+                params.put("assert", joinAssert(sourceField("单价"), "==", targetField("售价"), "0.01"));
+                break;
+            case "R020":
+                params.put("source", "t_payment");
+                params.put("target", "t_order");
+                params.put("groupBy", Arrays.asList(relationKey("订单ID", "订单ID")));
+                params.put("aggregate", aggregate("SUM", "支付金额"));
+                params.put("sourceWhere", condition(field("支付状态"), "==", literal("支付成功")));
+                params.put("assert", aggregateAssert("==", "实付金额", "0.01"));
+                break;
+            case "R024":
+                params.put("source", "t_payment");
+                params.put("target", "t_order");
+                params.put("keys", Arrays.asList(relationKey("订单ID", "订单ID")));
+                params.put("assert", joinAssert(sourceField("用户ID"), "==", targetField("用户ID"), null));
+                break;
+            case "R029":
+                params.put("table", "t_payment");
+                params.put("groupBy", Arrays.asList("订单ID"));
+                params.put("where", condition(field("支付状态"), "==", literal("支付成功")));
+                params.put("assert", duplicateAssert("<=", 1));
+                break;
+            default:
+                break;
+        }
+        return params;
+    }
+
+    private Map<String, Object> relationKey(String sourceField, String targetField) {
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put("sourceField", sourceField);
+        key.put("targetField", targetField);
+        return key;
+    }
+
+    private Map<String, Object> aggregate(String fn, String field) {
+        Map<String, Object> aggregate = new LinkedHashMap<>();
+        aggregate.put("fn", fn);
+        aggregate.put("field", field);
+        return aggregate;
+    }
+
+    private Map<String, Object> aggregateAssert(String operator, String targetField, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("targetField", targetField);
+        assertion.put("tolerance", tolerance);
+        return assertion;
+    }
+
+    private Map<String, Object> joinAssert(Object left, String operator, Object right, String tolerance) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("left", left);
+        assertion.put("op", operator);
+        assertion.put("right", right);
+        if (tolerance != null) {
+            assertion.put("tolerance", tolerance);
+        }
+        return assertion;
+    }
+
+    private Map<String, Object> sourceField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("sourceField", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> targetField(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("targetField", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> condition(Object left, String operator, Object right) {
+        Map<String, Object> condition = new LinkedHashMap<>();
+        condition.put("left", left);
+        condition.put("operator", operator);
+        condition.put("right", right);
+        return condition;
+    }
+
+    private Map<String, Object> field(String fieldName) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("field", fieldName);
+        return expression;
+    }
+
+    private Map<String, Object> literal(Object value) {
+        Map<String, Object> expression = new LinkedHashMap<>();
+        expression.put("literal", value);
+        return expression;
+    }
+
+    private Map<String, Object> duplicateAssert(String operator, int count) {
+        Map<String, Object> assertion = new LinkedHashMap<>();
+        assertion.put("op", operator);
+        assertion.put("count", count);
+        return assertion;
     }
 
     private RuleDefinition toRuleDefinition(RuleDefinitionEntity entity) {
@@ -387,15 +611,17 @@ public class ExcelImportService {
             case "R011":
                 return "FIELD_EXPRESSION";
             case "R017":
+            case "R020":
             case "R030":
-                return "AGGREGATION_EQUALS";
+                return "AGGREGATE_ASSERT";
             case "R018":
             case "R023":
                 return "EXISTS_IN_TABLE";
+            case "R019":
             case "R024":
-                return "FIELD_EQUALS";
+                return "JOIN_ASSERT";
             case "R029":
-                return "DUPLICATE_CHECK";
+                return "DUPLICATE_ASSERT";
             default:
                 return null;
         }

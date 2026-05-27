@@ -1,0 +1,54 @@
+# 通用数据验证 CLI 样例
+
+本目录提供一组最小可运行的非订单领域样例，用于验证通用数据验证工具不依赖 `R001-R030` 内置规则分支。
+
+## 文件说明
+
+| 文件 | 说明 |
+|---|---|
+| `validator.yml` | CLI 主配置，指定数据源、规则包、报告输出目录和退出码策略 |
+| `source.yml` | inline 文件数据源，包含 `contract_bill` 样例表 |
+| `rules.yml` | 通用模板规则包，使用 `ROW_EXPRESSION` 校验应收金额 |
+
+## 运行方式
+
+先检查配置和规则资产：
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.arguments="lint --config ../examples/generic-validation/validator.yml --output ../examples/generic-validation/reports/lint.json"
+```
+
+在后端目录运行：
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.arguments="run --config ../examples/generic-validation/validator.yml"
+```
+
+如果本机可直接执行 `java -jar`：
+
+```bash
+cd backend
+mvn package -DskipTests
+java -jar target/data-validator-0.1.0.jar run --config ../examples/generic-validation/validator.yml
+```
+
+生成规则绑定推荐：
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.arguments="recommend --rules ../examples/generic-validation/rules.yml --metadata ../examples/generic-validation/source.yml --output ../examples/generic-validation/reports/recommendations.json"
+```
+
+## 预期结果
+
+样例中 `B002` 的 `receivable_amount` 为 `950`，但按规则应为 `contract_amount - discount_amount = 920`，因此应命中 1 条严重异常。
+
+CLI 返回退出码 `2` 表示发现严重异常，不表示工具执行失败。
+
+校验报告和推荐结果默认输出到：
+
+```text
+examples/generic-validation/reports/
+```

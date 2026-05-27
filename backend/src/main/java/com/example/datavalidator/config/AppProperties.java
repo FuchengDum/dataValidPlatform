@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Configuration;
 public class AppProperties {
     private final Storage storage = new Storage();
     private final Validation validation = new Validation();
+    private final Ai ai = new Ai();
 
     public Storage getStorage() {
         return storage;
@@ -15,6 +16,10 @@ public class AppProperties {
 
     public Validation getValidation() {
         return validation;
+    }
+
+    public Ai getAi() {
+        return ai;
     }
 
     public static class Storage {
@@ -56,6 +61,63 @@ public class AppProperties {
 
         public void setStopOnRuleError(boolean stopOnRuleError) {
             this.stopOnRuleError = stopOnRuleError;
+        }
+    }
+
+    public static class Ai {
+        private boolean enabled;
+        private String provider = "openai-compatible";
+        private String endpoint = "";
+        private String apiKey = "";
+        private String model = "local-model";
+        private int timeoutSeconds = 30;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getProvider() {
+            return provider;
+        }
+
+        public void setProvider(String provider) {
+            this.provider = provider;
+        }
+
+        public String getEndpoint() {
+            return endpoint;
+        }
+
+        public void setEndpoint(String endpoint) {
+            this.endpoint = endpoint;
+        }
+
+        public String getApiKey() {
+            return apiKey;
+        }
+
+        public void setApiKey(String apiKey) {
+            this.apiKey = apiKey;
+        }
+
+        public String getModel() {
+            return model;
+        }
+
+        public void setModel(String model) {
+            this.model = model;
+        }
+
+        public int getTimeoutSeconds() {
+            return timeoutSeconds;
+        }
+
+        public void setTimeoutSeconds(int timeoutSeconds) {
+            this.timeoutSeconds = timeoutSeconds;
         }
     }
 }
