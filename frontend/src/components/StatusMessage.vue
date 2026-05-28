@@ -4,7 +4,7 @@
       <span class="icon">✓</span>
       <span>{{ store.state.message }}</span>
     </div>
-    <div v-if="store.state.error" class="error">
+    <div v-if="store.state.error" @click="closeMes()" class="error">
       <span class="icon">✕</span>
       <span>{{ store.state.error }}</span>
     </div>
@@ -13,6 +13,11 @@
 
 <script setup>
 import store from '../store'
+
+function closeMes() {
+  console.log('closeMes');
+  store.actions.setError('');
+}
 </script>
 
 <style scoped>
@@ -57,6 +62,7 @@ import store from '../store'
 }
 
 .error {
+  cursor: default;
   background: #fee2e2;
   color: #b91c1c;
   border: 1px solid #fecaca;

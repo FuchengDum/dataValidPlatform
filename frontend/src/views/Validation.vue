@@ -235,11 +235,12 @@ async function startValidation() {
   color: #374151;
   border: 2px solid #e5e7eb;
   border-radius: 10px;
-  padding: 0px 32px;
+  padding: 8px 32px;
   font-size: 16px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
+  height: auto;
 }
 
 .secondary-btn:hover:not(:disabled) {
