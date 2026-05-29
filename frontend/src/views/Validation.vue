@@ -207,9 +207,7 @@ async function startValidation() {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
-  height: 40px;
-  /* height: 44px; */
-  padding: 0px 32px;
+  height: auto !important;
 }
 
 .primary-btn:hover:not(:disabled) {

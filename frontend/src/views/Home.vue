@@ -178,8 +178,9 @@
 }
 
 .primary-btn.large {
-  padding: 18px 56px;
+  padding: 12px 56px;
   font-size: 20px;
+  height: auto;
 }
 
 .btn-icon {
