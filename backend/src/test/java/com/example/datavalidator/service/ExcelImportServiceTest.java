@@ -86,6 +86,8 @@ class ExcelImportServiceTest {
         verify(bindingRepository, times(6)).save(captor.capture());
         Map<String, RuleBindingEntity> bindings = captor.getAllValues().stream()
                 .collect(Collectors.toMap(RuleBindingEntity::getRuleId, binding -> binding));
+        assertThat(bindings.values()).extracting(RuleBindingEntity::getExecutorType)
+                .containsOnly("TEMPLATE");
         assertThat(bindings.get("R017").getTemplateCode()).isEqualTo("AGGREGATE_ASSERT");
         assertThat(bindings.get("R017").getTemplateParamsJson()).contains(
                 "\"source\":\"t_order_item\"", "\"target\":\"t_order\"", "\"小计金额\"", "\"订单金额\"");
@@ -95,7 +97,9 @@ class ExcelImportServiceTest {
                 "\"支付状态\"", "\"支付成功\"");
         assertThat(bindings.get("R030").getTemplateCode()).isEqualTo("AGGREGATE_ASSERT");
         assertThat(bindings.get("R030").getTemplateParamsJson()).contains(
-                "\"source\":\"t_order_item\"", "\"target\":\"t_order\"", "\"小计金额\"", "\"订单金额\"");
+                "\"source\":\"t_order_item\"", "\"target\":\"t_order\"", "\"订单ID\"",
+                "\"小计金额\"", "\"订单金额\"", "\"aggregate\"");
+        assertThat(bindings.get("R030").getTemplateParamsJson()).doesNotContain("\"日期\"");
         assertThat(bindings.get("R019").getTemplateCode()).isEqualTo("JOIN_ASSERT");
         assertThat(bindings.get("R019").getTemplateParamsJson()).contains(
                 "\"source\":\"t_order_item\"", "\"target\":\"t_product\"", "\"单价\"", "\"售价\"");

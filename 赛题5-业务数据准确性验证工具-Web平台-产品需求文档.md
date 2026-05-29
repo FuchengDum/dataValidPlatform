@@ -1,4 +1,4 @@
-# 赛题5：业务数据准确性验证工具产品需求文档
+# 赛题5：业务数据准确性验证工具-Web平台-产品需求文档
 
 ## 1. 背景与痛点
 
@@ -497,10 +497,10 @@ app:
 backend/
 frontend/
 各赛题输入案例/
-赛题5-业务数据准确性验证工具需求文档.md
-赛题5-业务数据准确性验证工具总技术文档.md
-赛题5-业务数据准确性验证工具产品需求文档.md
-赛题5-业务数据准确性验证工具部署演示操作文档.md
+赛题5-业务数据准确性验证工具-Web平台-需求文档.md
+赛题5-业务数据准确性验证工具-Web平台-总技术文档.md
+赛题5-业务数据准确性验证工具-Web平台-产品需求文档.md
+赛题5-业务数据准确性验证工具-Web平台与CLI-部署演示操作文档.md
 ```
 
 后端启动：
@@ -526,13 +526,38 @@ http://localhost:5173
 
 ### 7.2 Jar 分发
 
-后端可打包为 Jar：
+后端可打包为 Jar。CLI 分发要求 JRE 11 或更高版本：
 
 ```bash
 cd backend
 mvn clean package
-java -jar target/data-validator-0.1.0.jar
+java -jar target/data-validator-0.1.0.jar --version
 ```
+
+仓库根目录提供轻量启动脚本：
+
+```bash
+bin/data-validator --version
+bin/data-validator lint --config examples/distribution-minimal/validator.yml
+bin/data-validator run --config examples/distribution-minimal/validator.yml
+```
+
+脚本默认查找 `backend/target/data-validator-0.1.0.jar`。如发布包使用其他 Jar 位置，可通过环境变量覆盖：
+
+```bash
+DATA_VALIDATOR_JAR=/opt/data-validator/data-validator-0.1.0.jar bin/data-validator --version
+JAVA_OPTS="-Xmx512m" bin/data-validator run --config examples/distribution-minimal/validator.yml
+```
+
+推荐发布包目录：
+
+```text
+bin/data-validator
+backend/target/data-validator-0.1.0.jar
+examples/distribution-minimal/
+```
+
+`examples/distribution-minimal/` 只包含配置、规则、样例数据和预期结果说明，不包含生成报告、临时文件、密钥或本地环境路径。
 
 如需单服务演示，可将前端构建产物放入后端静态资源目录后重新打包；当前推荐方式仍为前后端分别启动，便于排查问题。
 

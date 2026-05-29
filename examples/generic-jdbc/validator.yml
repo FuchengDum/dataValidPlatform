@@ -1,0 +1,10 @@
+schemaVersion: 1
+source:
+  type: jdbc
+  file: source.yml
+rules:
+  file: rules.yml
+validation:
+  failOnSeverity: CRITICAL
+  formats: [json, markdown, junit]
+  outputDir: reports

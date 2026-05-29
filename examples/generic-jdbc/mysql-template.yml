@@ -1,0 +1,23 @@
+schemaVersion: 1
+type: jdbc
+jdbc:
+  url: jdbc:mysql://127.0.0.1:3306/biz?useSSL=true&allowPublicKeyRetrieval=false
+  driverClassName: com.mysql.cj.jdbc.Driver
+  username: readonly_user
+  passwordEnv: BIZ_READONLY_PASSWORD
+  dialect: mysql
+  connectionTimeoutMs: 3000
+  queryTimeoutSeconds: 30
+  fetchSize: 500
+  maxRows: 10000
+tables:
+  - logicalName: contract_bill
+    physicalName: billing.contract_bill
+    primaryKey: bill_id
+    headers: [bill_id, contract_amount, discount_amount, receivable_amount]
+    fieldMappings:
+      receivable_amount: recv
+  - logicalName: payment
+    primaryKey: payment_id
+    headers: [payment_id, bill_id, paid_amount]
+    sql: "SELECT payment_id AS payment_id, bill_id AS bill_id, paid_amount AS paid_amount FROM payment"

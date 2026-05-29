@@ -156,6 +156,11 @@ public class AiAssistService {
 
     public RuleBindingRecommendationResult recommendRuleBinding(
             RuleDefinitionEntity rule, Map<String, List<String>> tableFields) {
+        return recommendRuleBindingWithTrace(rule, tableFields).getResult();
+    }
+
+    public RuleBindingRecommendationTrace recommendRuleBindingWithTrace(
+            RuleDefinitionEntity rule, Map<String, List<String>> tableFields) {
         if (rule == null) {
             throw new BadRequestException("规则定义不能为空");
         }
@@ -165,17 +170,18 @@ public class AiAssistService {
         }
         RuleTemplateSemanticMatch localMatch = semanticMapper.recommend(rule, tableFields);
         RuleBindingRecommendationResult local = localRecommendation(localMatch);
-        Optional<String> modelResponse = aiChatClient
-                .complete(recommendationSystemPrompt(), recommendationUserPrompt(rule, tableFields));
+        String systemPrompt = recommendationSystemPrompt();
+        String userPrompt = recommendationUserPrompt(rule, tableFields);
+        Optional<String> modelResponse = aiChatClient.complete(systemPrompt, userPrompt);
         if (modelResponse.isEmpty()) {
-            return local;
+            return new RuleBindingRecommendationTrace(local, systemPrompt, userPrompt, Optional.empty());
         }
         RecommendationParseResult generated = parseRecommendationResult(modelResponse.get(), tableFields, localMatch);
         if (generated.result.isPresent()) {
-            return generated.result.get();
+            return new RuleBindingRecommendationTrace(generated.result.get(), systemPrompt, userPrompt, modelResponse);
         }
         local.getWarnings().add(fallbackWarning(generated.failureReason));
-        return local;
+        return new RuleBindingRecommendationTrace(local, systemPrompt, userPrompt, modelResponse);
     }
 
     private AnalysisResult localAnalysis(ValidationFindingEntity finding, List<FindingEvidenceEntity> evidences) {
@@ -1835,6 +1841,28 @@ public class AiAssistService {
         public void setGeneratedByAi(boolean generatedByAi) { this.generatedByAi = generatedByAi; }
         public List<String> getWarnings() { return warnings; }
         public void setWarnings(List<String> warnings) { this.warnings = warnings; }
+    }
+
+    public static class RuleBindingRecommendationTrace {
+        private final RuleBindingRecommendationResult result;
+        private final String systemPrompt;
+        private final String userPrompt;
+        private final Optional<String> modelResponse;
+
+        RuleBindingRecommendationTrace(RuleBindingRecommendationResult result,
+                                       String systemPrompt,
+                                       String userPrompt,
+                                       Optional<String> modelResponse) {
+            this.result = result;
+            this.systemPrompt = systemPrompt;
+            this.userPrompt = userPrompt;
+            this.modelResponse = modelResponse;
+        }
+
+        public RuleBindingRecommendationResult getResult() { return result; }
+        public String getSystemPrompt() { return systemPrompt; }
+        public String getUserPrompt() { return userPrompt; }
+        public Optional<String> getModelResponse() { return modelResponse; }
     }
 
     private static class RecommendationParseResult {

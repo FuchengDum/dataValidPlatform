@@ -1,0 +1,28 @@
+schemaVersion: 1
+rules:
+  - ruleId: C960
+    ruleName: jdbc receivable amount check
+    category: SINGLE_BUSINESS_RULE
+    severity: CRITICAL
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: contract_bill
+      conditions:
+        - left: { field: receivable_amount }
+          operator: "=="
+          right:
+            op: "-"
+            left: { field: contract_amount }
+            right: { field: discount_amount }
+  - ruleId: C961
+    ruleName: payment bill relation check
+    category: MULTI_TABLE_RELATION
+    severity: WARNING
+    templateCode: RELATION_EXISTS
+    templateParams:
+      source: payment
+      target: contract_bill
+      keys:
+        - sourceField: bill_id
+          targetField: bill_id
+      expectExists: true

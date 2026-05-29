@@ -1,0 +1,22 @@
+schemaVersion: 1
+type: jdbc
+jdbc:
+  url: "jdbc:h2:mem:generic_jdbc;DB_CLOSE_DELAY=-1;INIT=RUNSCRIPT FROM '../examples/generic-jdbc/schema.sql'"
+  driverClassName: org.h2.Driver
+  username: sa
+  dialect: h2
+  connectionTimeoutMs: 3000
+  queryTimeoutSeconds: 30
+  fetchSize: 100
+  maxRows: 100
+tables:
+  - logicalName: contract_bill
+    physicalName: contract_bill
+    primaryKey: bill_id
+    headers: [bill_id, contract_amount, discount_amount, receivable_amount]
+    fieldMappings:
+      receivable_amount: recv
+  - logicalName: payment
+    primaryKey: payment_id
+    headers: [payment_id, bill_id, paid_amount]
+    sql: "SELECT payment_id AS payment_id, bill_id AS bill_id, paid_amount AS paid_amount FROM payment"

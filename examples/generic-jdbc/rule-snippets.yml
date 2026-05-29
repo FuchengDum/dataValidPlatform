@@ -1,0 +1,95 @@
+schemaVersion: 1
+rules:
+  - ruleId: S1201
+    ruleName: 必填字段非空片段
+    category: SINGLE_FIELD_CONSTRAINT
+    severity: CRITICAL
+    templateCode: NOT_NULL
+    templateParams:
+      tableName: contract_bill
+      fields: [bill_id, receivable_amount]
+  - ruleId: S1202
+    ruleName: 金额字段非负片段
+    category: SINGLE_FIELD_CONSTRAINT
+    severity: CRITICAL
+    templateCode: NON_NEGATIVE
+    templateParams:
+      tableName: contract_bill
+      fields: [contract_amount, discount_amount, receivable_amount]
+  - ruleId: S1203
+    ruleName: 数值类型片段
+    category: SINGLE_FIELD_CONSTRAINT
+    severity: CRITICAL
+    templateCode: NUMERIC_TYPE
+    templateParams:
+      tableName: payment
+      fields: [paid_amount]
+      allowBlank: false
+  - ruleId: S1204
+    ruleName: 金额关系片段
+    category: SINGLE_BUSINESS_RULE
+    severity: CRITICAL
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: contract_bill
+      conditions:
+        - left: { field: receivable_amount }
+          operator: "=="
+          right:
+            op: "-"
+            left: { field: contract_amount }
+            right: { field: discount_amount }
+  - ruleId: S1205
+    ruleName: 跨表存在片段
+    category: MULTI_TABLE_RELATION
+    severity: WARNING
+    templateCode: RELATION_EXISTS
+    templateParams:
+      source: payment
+      target: contract_bill
+      keys:
+        - sourceField: bill_id
+          targetField: bill_id
+      expectExists: true
+  - ruleId: S1206
+    ruleName: 关联断言片段
+    category: MULTI_TABLE_RELATION
+    severity: WARNING
+    templateCode: JOIN_ASSERT
+    templateParams:
+      source: payment
+      target: contract_bill
+      keys:
+        - sourceField: bill_id
+          targetField: bill_id
+      assert:
+        left: { sourceField: paid_amount }
+        op: "<="
+        right: { targetField: receivable_amount }
+        tolerance: 0.01
+  - ruleId: S1207
+    ruleName: 聚合一致性片段
+    category: METRIC_CONSISTENCY
+    severity: CRITICAL
+    templateCode: AGGREGATE_ASSERT
+    templateParams:
+      source: payment
+      target: contract_bill
+      groupBy:
+        - sourceField: bill_id
+          targetField: bill_id
+      aggregate:
+        op: SUM
+        field: paid_amount
+      assert:
+        op: "=="
+        targetField: receivable_amount
+        tolerance: 0.01
+  - ruleId: S1208
+    ruleName: 重复校验片段
+    category: SINGLE_FIELD_CONSTRAINT
+    severity: WARNING
+    templateCode: DUPLICATE_CHECK
+    templateParams:
+      tableName: payment
+      groupBy: [bill_id]

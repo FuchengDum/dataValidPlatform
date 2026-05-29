@@ -1,0 +1,215 @@
+# 通用数据验证工具-CLI-规则片段库
+
+本文档提供可复制的 YAML 规则片段。第一版片段只使用现有 `TemplateRuleExecutor` 已支持的模板，不新增执行语义。示例字段来自 `examples/generic-jdbc`，复制到订单履约样板或真实业务库时，请先替换表名、字段名和规则 ID。
+
+配套可运行规则包：
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.arguments="lint --rules ../examples/generic-jdbc/rule-snippets.yml --metadata ../examples/generic-jdbc/source.yml"
+mvn spring-boot:run -Dspring-boot.run.arguments="validate --rules ../examples/generic-jdbc/rule-snippets.yml --source ../examples/generic-jdbc/source.yml --output ../examples/generic-jdbc/reports"
+```
+
+## 复制前必改项
+
+1. `ruleId`：在一个规则包内必须唯一。
+2. `ruleName`：改成业务人员能理解的名称。
+3. `category`：从 `SINGLE_FIELD_CONSTRAINT`、`SINGLE_BUSINESS_RULE`、`MULTI_TABLE_RELATION`、`METRIC_CONSISTENCY` 中选择。
+4. `severity`：从 `CRITICAL`、`WARNING` 中选择。
+5. `templateParams` 中的表名和字段名：必须存在于 `source.yml` 的 `tables[].logicalName` 和 `headers`。
+
+常见 lint 修复方向：
+
+- `UNKNOWN_TABLE`：把 `tableName`、`source`、`target` 改成 `source.yml` 已声明的逻辑表名。
+- `UNKNOWN_FIELD`：把 `fields`、`keys`、`left/right`、`groupBy` 中的字段改成表的 `headers` 字段。
+- `MISSING_TEMPLATE_PARAMS`：补齐片段中的 `templateParams` 必填结构，不要只复制规则头。
+- `UNKNOWN_TEMPLATE`：优先使用本文档列出的模板码；旧兼容模板只用于迁移已有规则。
+
+## 片段 1：非空校验
+
+适用场景：主键、业务编号、状态、时间等字段必须有值。
+
+必改字段：`ruleId`、`tableName`、`fields`。
+
+```yaml
+- ruleId: S1201
+  ruleName: 必填字段非空片段
+  category: SINGLE_FIELD_CONSTRAINT
+  severity: CRITICAL
+  templateCode: NOT_NULL
+  templateParams:
+    tableName: contract_bill
+    fields: [bill_id, receivable_amount]
+```
+
+常见错误：`fields` 中写了数据库物理列名，但 `source.yml` 的 `headers` 使用逻辑字段名。lint 会提示可用字段列表。
+
+## 片段 2：非负校验
+
+适用场景：金额、数量、库存、积分等字段不能小于 0。
+
+必改字段：`ruleId`、`tableName`、`fields`。
+
+```yaml
+- ruleId: S1202
+  ruleName: 金额字段非负片段
+  category: SINGLE_FIELD_CONSTRAINT
+  severity: CRITICAL
+  templateCode: NON_NEGATIVE
+  templateParams:
+    tableName: contract_bill
+    fields: [contract_amount, discount_amount, receivable_amount]
+```
+
+常见错误：字段值不是数值时，非负模板会跳过该值；需要同时约束类型时，叠加 `NUMERIC_TYPE` 片段。
+
+## 片段 3：数值类型校验
+
+适用场景：金额、数量等字段必须能解析为数值。
+
+必改字段：`ruleId`、`tableName`、`fields`、`allowBlank`。
+
+```yaml
+- ruleId: S1203
+  ruleName: 数值类型片段
+  category: SINGLE_FIELD_CONSTRAINT
+  severity: CRITICAL
+  templateCode: NUMERIC_TYPE
+  templateParams:
+    tableName: payment
+    fields: [paid_amount]
+    allowBlank: false
+```
+
+常见错误：空值是否算异常取决于 `allowBlank`。关键金额字段建议使用 `allowBlank: false`。
+
+## 片段 4：金额关系校验
+
+适用场景：同一行内校验 `应收金额 = 合同金额 - 优惠金额`、`小计 = 单价 * 数量` 这类计算关系。
+
+必改字段：`ruleId`、`tableName`、`conditions[].left.field`、表达式中的字段名和操作符。
+
+```yaml
+- ruleId: S1204
+  ruleName: 金额关系片段
+  category: SINGLE_BUSINESS_RULE
+  severity: CRITICAL
+  templateCode: ROW_EXPRESSION
+  templateParams:
+    tableName: contract_bill
+    conditions:
+      - left: { field: receivable_amount }
+        operator: "=="
+        right:
+          op: "-"
+          left: { field: contract_amount }
+          right: { field: discount_amount }
+```
+
+常见错误：`conditions` 必须是数组，即使只有一条条件也要写成 `-` 列表。
+
+## 片段 5：跨表存在校验
+
+适用场景：明细表、支付表、库存流水表中的外键必须能在主表中找到对应记录。
+
+必改字段：`ruleId`、`source`、`target`、`keys[].sourceField`、`keys[].targetField`、`expectExists`。
+
+```yaml
+- ruleId: S1205
+  ruleName: 跨表存在片段
+  category: MULTI_TABLE_RELATION
+  severity: WARNING
+  templateCode: RELATION_EXISTS
+  templateParams:
+    source: payment
+    target: contract_bill
+    keys:
+      - sourceField: bill_id
+        targetField: bill_id
+    expectExists: true
+```
+
+常见错误：两个表字段名相同也建议显式写 `sourceField` 和 `targetField`，后续替换字段时更不容易误改。
+
+## 片段 6：关联断言校验
+
+适用场景：关联到目标表后，比较来源字段和目标字段，例如支付金额不能大于应收金额、明细单价应等于商品售价。
+
+必改字段：`ruleId`、`source`、`target`、`keys`、`assert.left`、`assert.op`、`assert.right`。
+
+```yaml
+- ruleId: S1206
+  ruleName: 关联断言片段
+  category: MULTI_TABLE_RELATION
+  severity: WARNING
+  templateCode: JOIN_ASSERT
+  templateParams:
+    source: payment
+    target: contract_bill
+    keys:
+      - sourceField: bill_id
+        targetField: bill_id
+    assert:
+      left: { sourceField: paid_amount }
+      op: "<="
+      right: { targetField: receivable_amount }
+      tolerance: 0.01
+```
+
+常见错误：`sourceField` 只能引用来源表字段，`targetField` 只能引用目标表字段。
+
+## 片段 7：聚合一致性校验
+
+适用场景：子表按主键汇总后，应等于主表金额字段，例如支付金额汇总等于应收金额。
+
+必改字段：`ruleId`、`source`、`target`、`groupBy`、`aggregate.field`、`assert.targetField`。
+
+```yaml
+- ruleId: S1207
+  ruleName: 聚合一致性片段
+  category: METRIC_CONSISTENCY
+  severity: CRITICAL
+  templateCode: AGGREGATE_ASSERT
+  templateParams:
+    source: payment
+    target: contract_bill
+    groupBy:
+      - sourceField: bill_id
+        targetField: bill_id
+    aggregate:
+      op: SUM
+      field: paid_amount
+    assert:
+      op: "=="
+      targetField: receivable_amount
+      tolerance: 0.01
+```
+
+常见错误：聚合字段必须是来源表字段；`targetField` 必须是目标表字段。按日期、状态等多字段汇总时，可在 `groupBy` 中继续追加字段映射。
+
+## 片段 8：重复校验
+
+适用场景：同一业务键不应出现多条记录，例如同一订单不应有多笔成功支付。
+
+必改字段：`ruleId`、`tableName`、`groupBy`，按需增加 `where`。
+
+```yaml
+- ruleId: S1208
+  ruleName: 重复校验片段
+  category: SINGLE_FIELD_CONSTRAINT
+  severity: WARNING
+  templateCode: DUPLICATE_CHECK
+  templateParams:
+    tableName: payment
+    groupBy: [bill_id]
+```
+
+常见错误：如果只想检查特定状态的重复记录，需要增加 `where` 条件；否则会对全表分组。
+
+## 暂未覆盖的扩展需求
+
+以下能力当前片段库不新增实现，后续如需要可进入模板扩展：
+
+1. 跨表多级链路的一步式校验，目前可用多个 `RELATION_EXISTS` 和 `JOIN_ASSERT` 组合表达。
+2. 分组后限定数量上下限的强断言，可评估使用或增强 `DUPLICATE_ASSERT`。
+3. 字符串格式、枚举值范围、日期范围等校验，当前可先用 `ROW_EXPRESSION` 表达，后续可沉淀专用模板。

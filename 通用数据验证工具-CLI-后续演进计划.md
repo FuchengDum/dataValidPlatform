@@ -1,0 +1,615 @@
+# 通用数据验证工具-CLI-后续演进计划
+
+## 1. 当前定位
+
+第一版定位为 **CLI 优先的轻量通用数据验证工具**，Web 继续保留赛题5演示和规则配置工作台。核心路线是“旁路抽核”：先新增通用验证内核、规则包和嵌入式 CLI，不直接替换现有 Web 链路，避免破坏当前演示闭环。
+
+边界保持不变：
+
+1. AI 只做推荐、解释和只读 SQL 草案，不参与确定性判定。
+2. 规则资产以 YAML/JSON 规则包为主，Excel 作为兼容导入方向。
+3. JDBC/SQL 输入必须默认强只读。
+4. 新增通用规则不得继续扩展 `R001-R030` 编号 switch。
+
+## 2. 已完成进度
+
+### 2.1 根目录计划文档
+
+已完成。
+
+本文件作为后续通用化演进、验收和执行记录的主计划文档。
+
+### 2.2 嵌入式 CLI 入口
+
+已完成第一版。
+
+当前 `DataValidatorApplication` 已支持以下 CLI 命令进入非 Web 模式：
+
+```bash
+bin/data-validator run --config validator.yml
+bin/data-validator validate --rules rules.yml --source source.yml --output reports/
+bin/data-validator lint --config validator.yml
+bin/data-validator lint --rules rules.yml --metadata source.yml
+bin/data-validator init jdbc --output demo-dir
+bin/data-validator recommend --rules rules.yml --metadata source.yml --output recommendations.json
+bin/data-validator --version
+```
+
+已实现退出码：
+
+| 退出码 | 含义 |
+|---:|---|
+| `0` | 执行成功，无阻断级异常 |
+| `1` | 工具执行失败 |
+| `2` | 发现严重异常 |
+| `3` | 配置或规则非法 |
+
+说明：`recommend` 输出规则绑定推荐 JSON，只提供建议，不自动写回规则包。
+
+### 2.3 通用验证内核
+
+已完成第一版旁路内核。
+
+新增能力：
+
+1. `GenericValidationRunner`：通用校验入口。
+2. `GenericRuleAssetLoader`：读取 YAML/JSON 配置和规则包。
+3. `GenericDataSourceProvider`：加载文件/inline/JDBC 数据源。
+4. `GenericValidationReportWriter`：输出 JSON、Markdown、HTML 报告。
+5. `SqlReadOnlyGuard`：拒绝非 SELECT、多语句、注释和危险关键字。
+
+当前通用内核复用既有 `TemplateRuleExecutor`，不复制规则执行逻辑。
+
+### 2.4 通用规则包
+
+已完成第一版。
+
+规则包以 `rules` 列表描述模板规则，例如：
+
+```yaml
+rules:
+  - ruleId: C900
+    ruleName: receivable check
+    category: SINGLE_BUSINESS_RULE
+    severity: CRITICAL
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: contract_bill
+      conditions:
+        - left: { field: receivable_amount }
+          operator: "=="
+          right:
+            op: "-"
+            left: { field: contract_amount }
+            right: { field: discount_amount }
+```
+
+当前已验证无需新增 Java 内置规则编号，也能完成非订单领域校验。
+
+### 2.5 验证记录
+
+已完成。
+
+最近一次验证结果：
+
+1. `mvn -Dtest=GenericValidationRunnerTest,GenericValidationCliTest test`：通过，`21` tests，`0` failures，`0` errors。
+2. `mvn test`：通过，`134` tests，`0` failures，`0` errors。
+3. `mvn package -DskipTests`：通过。
+4. CLI smoke：通过预期语义，检测到 1 条严重异常并返回退出码 `2`，同时生成 JSON/Markdown 报告。
+5. CLI recommend smoke：通过，AI 关闭时返回本地语义推荐 JSON，包含 `templateCode`、`templateParams`、`explanation`、`confidence` 和 `warnings`。
+6. CLI lint smoke：通过，样例配置返回 `valid=true`，`errors=[]`，`warnings=[]`。
+7. CLI file-source lint smoke：通过，`examples/generic-file-data` 配置返回有效 lint 结果。
+8. CLI file-source run smoke：通过预期语义，检测到 1 条严重异常；应用返回退出码 `2`，`spring-boot:run` 会因此将 Maven 目标标记为失败。
+9. CLI jdbc-source lint smoke：通过，`examples/generic-jdbc` 配置返回有效 lint 结果，未连接业务库。
+10. CLI jdbc-source run smoke：通过预期语义，H2 样例通过 JDBC 读取 2 张表，检测到 1 条严重异常；应用返回退出码 `2`，`spring-boot:run` 会因此将 Maven 目标标记为失败。
+11. CLI CI JSON smoke：通过，`run --json --no-report` stdout 仅输出 JSON summary，`reports={}`，样例异常返回退出码 `2`。
+12. CLI JUnit report smoke：通过，`run --quiet --output /private/tmp/stage7-generic-validation-reports` 生成 JSON、Markdown、JUnit XML 三类报告，样例异常返回退出码 `2`。
+13. CLI Case5/V3 smoke：通过，`bin/data-validator lint --config examples/case5-seed/validator.yml` 返回 `0`。
+14. CLI Case5/V3 run：通过预期语义，`bin/data-validator run --config examples/case5-seed/validator.yml --json --no-report` 执行 R001-R030 共 30 条规则，读取 5 张 V3 seed 业务表；样例数据存在严重异常，因此返回退出码 `2`。
+15. 最近完整回归：`mvn test` 通过，`164` tests，`0` failures，`0` errors。
+
+环境备注：当前 shell 的系统 `java` 未绑定 JRE；本轮真实 jar smoke 使用 Maven 同源的 Homebrew OpenJDK 可执行文件完成验证。
+
+### 2.6 可运行样例与文档
+
+已完成。
+
+新增 `examples/generic-validation/` 样例目录，包含：
+
+1. `validator.yml`：CLI 主配置，声明 source/rules/output/formats。
+2. `source.yml`：inline 数据源样例，使用非订单领域的 `contract_bill` 数据。
+3. `rules.yml`：通用规则包样例，使用 `ROW_EXPRESSION` 校验应收金额。
+4. `README.md`：说明执行命令、退出码、预期异常和报告产物。
+5. `reports/.gitignore`：保留报告输出目录，同时避免 smoke test 产物进入源码变更。
+
+当前样例可稳定触发 1 条 `CRITICAL` 异常，用于验证退出码 `2` 和报告输出链路。
+
+### 2.7 `recommend` 命令
+
+已完成第一版。
+
+新增能力：
+
+1. `GenericValidationCli` 支持 `recommend --rules ... --metadata ... --output ...`。
+2. `AiAssistService` 新增文件模式推荐入口，可直接接收规则定义和字段元数据。
+3. 推荐逻辑复用既有 `RuleTemplateSemanticMapper`、AI JSON 解析、字段合法性校验和本地降级策略。
+4. AI 关闭或不可用时返回 `LOCAL_RULE_BASED` 推荐；AI 返回非法模板或未知字段时降级为本地推荐。
+5. 推荐结果只输出 JSON，不自动修改 `rules.yml`。
+
+当前样例推荐结果会将 `C900` 映射为 `ROW_EXPRESSION`，置信度为 `HIGH`。
+
+### 2.8 配置与规则资产契约化
+
+已完成第一版。
+
+新增能力：
+
+1. `validator.yml`、`source.yml`、`rules.yml` 支持 `schemaVersion`。
+2. `GenericValidationCli` 支持 `lint --config validator.yml`。
+3. `GenericValidationCli` 支持 `lint --rules rules.yml --metadata source.yml`。
+4. `GenericValidationLinter` 可校验规则 ID 唯一性、必填字段、未知模板、未知表、未知字段和模板参数结构。
+5. 兼容模板会输出 warning，当前包括 `FIELD_EQUALS`、`AGGREGATION_EQUALS`、`DUPLICATE_CHECK`。
+6. lint 结果以结构化 JSON 输出，字段包含 `valid`、`errors`、`warnings`，每个问题包含 `code`、`message`、`path`、`suggestion`。
+7. `schemaVersion` 当前仅支持 `1`；缺失时 warning，非法版本时 error。
+8. 空 `validator.yml`、空 `source.yml`、空 `rules.yml` 会输出结构化错误，不再被视为有效配置。
+9. `source.yml` 中每张表的 `primaryKey` 仍作为 lint 必填项。
+10. `RELATION_EXISTS`、`JOIN_ASSERT`、`AGGREGATE_ASSERT` 已补充表字段引用的路径级检查，能定位到 `keys[0].targetField` 等具体参数路径。
+
+当前 lint 只读取配置、规则和元数据，不执行真实业务数据校验。
+
+### 2.9 AI 推荐产品化
+
+已完成第一版。
+
+新增能力：
+
+1. `recommend` 支持 `--candidate-rules rules.recommended.yml`，输出可审阅候选规则包。
+2. 推荐 JSON 增加 `diff`，包含原始规则、原模板、推荐模板、推荐参数和推荐原因。
+3. 推荐 JSON 增加 `candidateGenerated`，低置信度或不可执行推荐不会进入候选规则包。
+4. 推荐 JSON 增加 `warningDetails` 和 `warningCategories`，当前分类包括字段缺失、模板不支持、AI降级、安全拒绝、人工确认必需。
+5. `recommend` 支持 `--debug-ai debug-dir`，按规则 ID 落盘 prompt 和模型 response，便于调试复现。
+6. 候选规则包只写入用户指定的新文件，不自动修改正式 `rules.yml`。
+
+当前 AI 关闭时仍返回 `LOCAL_RULE_BASED` 本地推荐；AI 返回非法模板、未知字段或不可执行参数时继续降级，不污染正式规则包。
+
+AI 模型当前只用于 CLI `recommend` 生成候选规则模板，`lint` 和 `run` 不依赖 AI。运行时通过环境变量启用 OpenAI-compatible Chat Completions 服务：
+
+```bash
+LOCAL_AI_ENABLED=true \
+LOCAL_AI_ENDPOINT=http://127.0.0.1:8317/v1/chat/completions \
+LOCAL_AI_API_KEY=<your-api-key> \
+LOCAL_AI_MODEL=gpt-5.4 \
+LOCAL_AI_TIMEOUT_SECONDS=30 \
+bin/data-validator recommend \
+  --rules examples/generic-validation/rules.yml \
+  --metadata examples/generic-validation/source.yml \
+  --output examples/generic-validation/reports/recommendations.json \
+  --candidate-rules examples/generic-validation/reports/rules.recommended.yml \
+  --debug-ai examples/generic-validation/reports/ai-debug
+```
+
+配置项说明：
+
+| 环境变量 | 是否必填 | 说明 |
+|---|---|---|
+| `LOCAL_AI_ENABLED` | 是 | 必须为 `true` 才会真实调用大模型；默认 `false` 会走本地降级推荐 |
+| `LOCAL_AI_ENDPOINT` | 是 | OpenAI-compatible 服务地址，支持基础地址或完整 `/v1/chat/completions` 地址 |
+| `LOCAL_AI_API_KEY` | 按服务要求 | 作为 `Authorization: Bearer <key>` 发送；不要写入源码、YAML 或文档示例真实值 |
+| `LOCAL_AI_MODEL` | 是 | 模型名称，必须与模型服务实际暴露的名称一致 |
+| `LOCAL_AI_TIMEOUT_SECONDS` | 否 | 请求超时时间，默认 `30` 秒 |
+
+`LOCAL_AI_ENDPOINT` 可写为服务基础地址或完整 chat completions 地址。不要写成重复路径，例如 `/v1/chat/completions/v1/chat/completions`。
+
+注意：`validator.yml` 中的 `ai.enabled` 只保留为配置结构字段，当前 CLI 是否真正调用模型以运行进程的 `LOCAL_AI_ENABLED` 等环境变量为准。若未设置 `LOCAL_AI_ENABLED=true`、endpoint 不可达、模型名不匹配或 API Key 无效，`recommend` 会返回 `LOCAL_RULE_BASED` 或带有 `AI降级` warning 的本地推荐结果。
+
+## 3. 当前 CLI 使用示例
+
+推荐先使用仓库样例：
+
+```bash
+bin/data-validator lint --config examples/generic-validation/validator.yml --output examples/generic-validation/reports/lint.json
+```
+
+```bash
+bin/data-validator run --config examples/generic-validation/validator.yml
+```
+
+生成规则绑定推荐：
+
+```bash
+bin/data-validator recommend \
+  --rules examples/generic-validation/rules.yml \
+  --metadata examples/generic-validation/source.yml \
+  --output examples/generic-validation/reports/recommendations.json \
+  --candidate-rules examples/generic-validation/reports/rules.recommended.yml
+```
+
+如需排查 AI 推荐，可显式开启 prompt/response 落盘：
+
+```bash
+bin/data-validator recommend \
+  --rules examples/generic-validation/rules.yml \
+  --metadata examples/generic-validation/source.yml \
+  --output examples/generic-validation/reports/recommendations.json \
+  --debug-ai examples/generic-validation/reports/ai-debug
+```
+
+开发态也可以通过 Spring Boot 启动 CLI，例如：
+
+```bash
+cd backend
+mvn spring-boot:run -Dspring-boot.run.arguments="run --config ../examples/generic-validation/validator.yml"
+```
+
+当前样例预期会命中 1 条严重异常，因此 CLI 返回退出码 `2`。这不是执行失败，而是质量门禁语义。
+
+## 4. 下一阶段计划
+
+阶段 5 到阶段 14 已完成第一版，当前工具已经具备通用 CLI、规则包、文件源、JDBC 只读源、报告契约、AI 推荐、基础分发、快速上手、片段扩展和 Case5/V3 CLI 复现能力。后续路线从“能跑通”转向“稳定好用、易排错、易复用”。
+
+质量门禁、CI 摘要、规则覆盖摘要和流水线接入先单独规划，不阻塞当前易用性建设。详见 `通用数据验证工具-CLI-质量门禁后续计划.md`。
+
+推荐优先级：
+
+1. 先补齐 JDBC 快速上手入口，让用户不需要手写完整 YAML 也能跑通。
+2. 再强化 lint 和执行失败的修复建议，让用户知道错在哪、为什么错、怎么改。
+3. 随后补充规则片段库，让用户可以复制常见规则并替换表字段。
+4. 最后把 AI 推荐作为补充能力，用于规则片段无法覆盖时生成候选规则。
+
+### 阶段 5：通用文件数据源扩展
+
+已完成第一版。
+
+目标：让 CLI 真正能验证常见本地数据文件，而不仅是 YAML/JSON 形式的 inline 样例。
+
+已完成能力：
+
+1. 支持 CSV 数据源。
+2. 支持 XLSX 数据源，基于 Apache POI 读取指定 sheet 或首个 sheet。
+3. 支持 JSON 数组和 JSONL 数据源。
+4. `source.yml` 的表配置支持 `file`、`format`、`encoding`、`delimiter`、`sheet`、`headerRow`、`dataStartRow`、`nullValues`。
+5. 文件值统一转换为字符串，`null` 和配置的空值标记转换为空字符串；数字和布尔值按文本参与现有规则模板执行。
+6. 新增 `examples/generic-file-data/` 文件数据源样例，覆盖 CSV、JSONL 和 JSON 文本文件。
+7. 新增回归测试，覆盖 CSV、JSONL、JSON、XLSX 到统一 `DataTable` / `DataRow` 的转换。
+
+验收：
+
+1. CSV/XLSX/JSONL 都能转换为统一 `DataTable` / `DataRow`。
+2. 同一规则包可复用于不同文件数据源。
+3. 文件解析错误能输出明确位置和修复建议。
+4. 当前文件读取为内存模式，适合中小文件和 CLI 抽核场景；暂不支持流式处理、分片读取和超大文件限流。
+
+后续可增强项：
+
+1. 为文件源增加 `maxRows`、`maxFileSize` 和超限错误。
+2. 增加更多 CSV 方言参数，例如 quote、escape、BOM 处理和多字符分隔符。
+3. 增加 XLS/XLSX 多 sheet 批量映射样例。
+
+### 阶段 6：JDBC 只读接入强化
+
+已完成第一版。
+
+目标：在配置契约和字段契约稳定后，安全接入真实业务只读库。
+
+已完成能力：
+
+1. `source.type: jdbc` 支持独立 JDBC 配置，不复用应用默认 `JdbcTemplate` 查询业务库。
+2. `source.jdbc` 支持 `url`、`driverClassName`、`username`、`passwordEnv`、`dialect`、`connectionTimeoutMs`、`queryTimeoutSeconds`、`fetchSize`、`maxRows`。
+3. 第一版支持 H2 和 MySQL；不引入 PostgreSQL。
+4. 表模式通过 `physicalName + headers + fieldMappings` 生成显式字段 SQL，不允许 `SELECT *`。
+5. 表模式支持一层 `schema.table`，H2 使用双引号 quote，MySQL 使用反引号 quote。
+6. `fieldMappings` 可选；省略时 `headers` 默认同名映射到物理列。
+7. SQL 模式允许配置自定义 `sql`，但必须是单条只读 `SELECT`，且结果列必须覆盖 `headers`。
+8. `SqlReadOnlyGuard` 拒绝 `SELECT *`、多语句、注释、危险关键字、危险函数和 `FOR UPDATE`。
+9. 查询统一按 `maxRows + 1` 读取，超过 `maxRows` 直接失败，不静默截断报告。
+10. MySQL 必须通过 `passwordEnv` 读取密码；运行时和 lint 都拒绝 YAML 明文 `password`。
+11. lint 默认不连接数据库，只做 JDBC 配置、字段白名单、SQL 安全和规则引用的静态校验。
+12. 新增 `examples/generic-jdbc/`，包含 H2 可运行样例和 MySQL 无凭证模板。
+
+验收：
+
+1. 只读 SQL 拒绝危险语句、多语句、`SELECT *`、危险函数和 `FOR UPDATE`。
+2. 表输入与 SQL 查询输入都能转为统一 `DataTable` / `DataRow`。
+3. SQL 输出列缺少 `headers` 字段时直接报错。
+4. 不要求生产写权限，不执行修复 SQL。
+5. 超过 `maxRows` 时给出明确错误，不截断后继续生成报告。
+6. 凭证不写入规则包、样例和源码。
+
+后续可增强项：
+
+1. 增加显式 `lint --check-connection`，在用户主动开启时才连接数据库。
+2. 增加数据库元数据读取，用于校验物理表和物理列是否存在。
+3. 增加 PostgreSQL、Oracle 等更多方言前，先补充独立 quote 规则和集成样例。
+4. 支持参数化 SQL 模板，但仍禁止用户输入拼接 SQL。
+5. 为大结果集增加分页/游标读取策略，避免当前内存模式承载超大抽核。
+
+### 阶段 7：报告契约与 CI 集成
+
+已完成第一版。
+
+目标：让工具可以稳定进入自动化流水线。
+
+已完成能力：
+
+1. JSON 报告增加 `reportVersion: "1"`，并保留既有统计字段和 `findings`。
+2. 报告增加 `toolVersion`、`rulePackageHash`、`sourceSummary`、`execution`。
+3. `sourceSummary` 包含数据源类型、表数量、总行数、每张表的字段数和行数。
+4. `execution` 包含 `startedAt`、`durationMillis` 和 CLI 命令摘要。
+5. `validation.formats` 支持 `junit` / `junitxml`，生成 JUnit XML 报告，便于 CI 展示异常。
+6. CLI `run` / `validate` 支持 `--json`，输出机器可读 summary。
+7. CLI `run` / `validate` 支持 `--quiet`，用于抑制人类可读 summary。
+8. CLI `run` / `validate` 支持 `--no-report`，只执行校验和 stdout 输出，不生成报告文件。
+9. CLI 模式压制 Spring Boot banner 和启动日志，避免污染 `--json` 输出。
+10. 仓库样例默认增加 `junit` 报告格式。
+11. README 和计划文档已补充 CI 使用方式和退出码语义。
+
+验收：
+
+1. CI 可通过 `--json --no-report` 只读取 stdout JSON 判断是否失败。
+2. JSON、Markdown 和 JUnit XML 中的规则、异常、等级、表、主键等字段语义一致。
+3. 报告可追溯到具体规则包 hash、输入数据摘要和执行命令摘要。
+4. `--quiet` 可用于只依赖退出码的流水线步骤。
+
+后续可增强项：
+
+1. 固化独立 JSON Schema 文件，并在测试中校验 schema 兼容性。
+2. 增加 SARIF 输出，适配代码扫描类平台。
+3. 增加 `--summary-output`，将 stdout summary 同步写入指定文件。
+
+### 阶段 8：AI 推荐产品化
+
+已完成第一版。
+
+目标：让 AI 推荐真正降低规则编写成本，而不是只输出一段 JSON 建议。
+
+已完成能力：
+
+1. `recommend` 支持输出候选规则包，例如 `rules.recommended.yml`。
+2. 推荐结果包含 diff：原始规则、推荐模板、推荐参数、推荐原因。
+3. 低置信度推荐只输出说明，不生成可执行候选规则。
+4. warnings 分类：字段缺失、模板不支持、AI 降级、安全拒绝、人工确认必需。
+5. AI prompt/response 支持可选落盘，便于调试和复现。
+6. 保持“不自动写回正式规则包”的边界。
+
+验收：
+
+1. AI 关闭时仍能返回本地推荐。
+2. AI 返回非法模板、未知字段或不可执行参数时，不污染正式规则包。
+3. 人工可以直接审阅候选规则包并决定是否采纳。
+
+后续可增强项：
+
+1. 为推荐 JSON 和候选规则包固化独立 JSON Schema / YAML Schema。
+2. 将 `warningDetails.category` 进一步拆为稳定英文 code 和中文 displayName。
+3. 增加交互式采纳命令，但仍要求人工显式确认后才写入正式规则包。
+
+### 阶段 9：轻量 CLI 分发
+
+已完成第一版。
+
+目标：让使用者不需要理解 Spring Boot 项目结构，也能把工具当作轻量 CLI 使用。
+
+已完成能力：
+
+1. 提供 `bin/data-validator` 启动脚本。
+2. 支持 `data-validator --version`。
+3. 补充 Jar 分发、JRE 11、`DATA_VALIDATOR_JAR`、`JAVA_OPTS` 和目录结构说明。
+4. 新增 `examples/distribution-minimal/`，包含样例数据、规则、配置和预期结果说明。
+5. `--version`、`run`、`validate`、`recommend`、`lint` 都可通过 Jar 或 `bin/data-validator` 在非 Web 模式执行；CLI 模式继续关闭 Spring Boot banner 和启动日志。
+
+验收：
+
+1. 用户无需启动 Web 服务即可执行 `run`、`validate`、`recommend`、`lint`。
+2. 文档中的命令可以从仓库根目录或发布包目录稳定执行。
+3. 分发包不包含测试报告、临时文件、密钥或本地环境路径。
+
+当前推荐发布包目录：
+
+```text
+bin/data-validator
+backend/target/data-validator-0.1.0.jar
+examples/distribution-minimal/
+```
+
+后续可增强项：
+
+1. 增加自动组装 release zip/tar 的 Maven profile 或脚本。
+2. 增加 Windows `bin/data-validator.cmd`。
+3. 为 CLI 脚本补充 shellcheck/跨 shell 兼容性验证。
+
+### 阶段 10：JDBC + 订单履约快速上手
+
+已完成，优先级 P0。
+
+目标：让业务/测试人员可以通过一个命令生成 JDBC 校验起点，不必先理解完整 YAML 结构。
+
+计划能力：
+
+1. `GenericValidationCli` 新增 `init jdbc` 命令。
+2. `init jdbc` 默认生成通用只读 JDBC 骨架，包含 `validator.yml`、`source.yml`、`rules.yml` 和 `README.md`。
+3. `init jdbc --template order-fulfillment` 生成订单履约样板，默认使用 H2 内存库，可零凭证直接运行。
+4. 订单履约样板同时提供真实 MySQL/通用 JDBC 改造说明，提示用户替换 `url`、`driverClassName`、`dialect`、`headers`、`physicalName`、`fieldMappings` 和 `passwordEnv`。
+5. 订单履约样板必须使用通用模板规则和 YAML 规则包，不新增 `R001-R030` Java switch。
+6. 生成目录默认不覆盖已有文件；如需覆盖，后续再增加显式 `--force`。
+
+验收：
+
+1. 生成后的 H2 订单履约样板无需编辑即可执行 `lint --config validator.yml`。
+2. 生成后的 H2 订单履约样板无需编辑即可执行 `run --config validator.yml`。
+3. 样板能稳定命中预期异常，并能解释退出码 `2` 不是工具失败。
+4. 样板 README 能说明如何迁移到真实只读 JDBC 库。
+5. 生成内容不包含本机路径、明文数据库密码或临时报告产物。
+
+建议验证：
+
+1. `mvn -Dtest=GenericValidationCliTest,GenericValidationRunnerTest test`
+2. CLI smoke：`data-validator init jdbc --template order-fulfillment --output /tmp/order-demo`
+3. CLI smoke：在生成目录执行 `lint --config validator.yml`
+4. CLI smoke：在生成目录执行 `run --config validator.yml`
+
+### 阶段 11：修复建议优先的 lint 体验
+
+已完成，优先级 P0。
+
+目标：让用户在配置、规则或 JDBC 安全校验失败时，能看懂“错在哪、为什么错、怎么改”。
+
+计划能力：
+
+1. 保持 lint 输出结构化 JSON，继续使用 `valid`、`errors`、`warnings`、`code`、`message`、`path`、`suggestion`。
+2. 优先增强 JDBC 相关错误提示：缺少 `passwordEnv`、明文 `password`、JDBC URL 含敏感参数、未知 dialect、缺少 `headers`、缺少 `physicalName`、危险 SQL。
+3. 优先增强规则引用错误提示：未知表、未知字段、未知模板、缺少 `templateParams`、重复 `ruleId`。
+4. 每类高频错误至少给出一条可复制的 YAML 修复片段或明确的字段替换建议。
+5. CLI 人类可读错误继续简短；机器可读 JSON 保留完整诊断，方便后续工具消费。
+
+验收：
+
+1. 常见 JDBC 配置错误能定位到具体 `path`。
+2. 常见规则配置错误能定位到具体 `rules[index].templateParams...` 路径。
+3. `suggestion` 不只描述原则，还能告诉用户修改哪个字段。
+4. 错误提示不得输出密码、token、secret 或完整敏感连接串。
+
+建议验证：
+
+1. `mvn -Dtest=GenericValidationCliTest,GenericValidationRunnerTest test`
+2. 新增 lint 失败用例覆盖 JDBC、规则引用和 SQL 安全。
+3. 对 `examples/generic-jdbc/mysql-template.yml` 做静态 lint，确认不会要求真实凭证连接。
+
+### 阶段 12：规则片段库
+
+已完成，优先级 P1。
+
+目标：让用户通过复制片段和替换字段名来新增规则，而不是从零编写 `templateParams`。
+
+计划能力：
+
+1. 新增规则片段文档，按模板类型提供最小 YAML 片段。
+2. 第一版片段覆盖：非空、非负、数值类型、金额关系、跨表存在、关联断言、聚合一致性、重复校验。
+3. 每个片段包含：适用场景、必改字段、YAML 示例、常见错误和 lint 修复提示。
+4. 片段优先服务订单履约样板，但表名和字段名必须保持可替换，避免绑定单一业务域。
+5. 片段库不新增执行语义；如果现有模板无法表达，应记录为后续模板扩展需求。
+
+验收：
+
+1. 每个片段都能映射到现有 `TemplateRuleExecutor` 支持的模板。
+2. 每个片段至少有一个可运行样例或测试覆盖。
+3. 用户复制片段到订单履约样板后，`lint` 能给出明确通过或修复建议。
+
+建议验证：
+
+1. `mvn -Dtest=TemplateRuleExecutorTest,GenericValidationRunnerTest test`
+2. 使用订单履约样板逐类验证片段。
+
+实际落地：
+
+1. 新增 `通用数据验证工具-CLI-规则片段库.md`，覆盖非空、非负、数值类型、金额关系、跨表存在、关联断言、聚合一致性和重复校验 8 类片段。
+2. 新增 `examples/generic-jdbc/rule-snippets.yml`，作为可被工具直接读取、lint 和执行的片段规则包。
+3. `examples/generic-jdbc/README.md` 增加规则片段库入口和验证命令。
+4. 新增回归测试，确认片段库映射到现有模板、lint 有效，并能基于 `examples/generic-jdbc/source.yml` 执行。
+
+### 阶段 13：AI 推荐作为补充入口
+
+已完成，优先级 P2。
+
+目标：在规则片段库不足以覆盖用户需求时，用 AI 或本地语义推荐生成候选规则，继续保持人工确认边界。
+
+计划能力：
+
+1. 保留 `recommend --rules ... --metadata ... --candidate-rules ...` 作为候选生成入口。
+2. 推荐文档中明确：优先查规则片段库；片段无法覆盖时，再使用 `recommend`。
+3. 候选规则包只写入用户指定的新文件，不自动覆盖正式 `rules.yml`。
+4. 低置信度、字段缺失、模板不支持和安全拒绝场景不生成可执行候选规则。
+5. AI 关闭时仍返回本地规则推荐，保证离线可用。
+
+验收：
+
+1. AI 关闭时，本地推荐仍可工作。
+2. 候选规则包不会覆盖源规则包。
+3. 推荐结果包含 diff、原因、置信度、warning 分类和是否生成候选。
+4. 推荐结果可被人工审阅后复制或合并到正式规则包。
+
+建议验证：
+
+1. `mvn -Dtest=GenericValidationCliTest,AiAssistServiceTest,RuleTemplateSemanticMapperTest test`
+2. CLI recommend smoke 覆盖 `--candidate-rules` 和 `--debug-ai`。
+
+实际落地：
+
+1. 新增 `通用数据验证工具-CLI-AI推荐补充入口.md`，明确规则片段库优先、`recommend` 作为补充入口。
+2. `examples/generic-validation/README.md` 增加推荐入口说明，提醒候选规则需要人工审阅。
+3. 收紧候选生成门禁：AI 降级、字段缺失、模板不支持、安全拒绝时，只输出推荐 JSON，不写入可执行候选规则。
+4. 保留 AI 关闭时的本地语义推荐，继续输出 `diff`、`confidence`、`warningCategories`、`warningDetails` 和 `candidateGenerated`。
+
+### 阶段 14：CLI 使用 V3 业务表复现 Web 校验结果
+
+已完成，优先级 P0。
+
+目标：让 CLI 可以读取 V3 seed 初始化的赛题5业务表，用 YAML 规则包执行 R001-R030，形成一条不依赖 Web 上传流程的可复现校验链路。
+
+已完成能力：
+
+1. 新增 `examples/case5-seed/` 样例目录，包含 `validator.yml`、`source.yml`、`rules.yml` 和 `expected-result.md`。
+2. `source.yml` 使用 JDBC + H2 `INIT=RUNSCRIPT FROM 'classpath:db/migration/V3__seed_case5_business_tables.sql'` 装载 5 张 V3 seed 业务表。
+3. CLI 使用 `examples/case5-seed/rules.yml` 执行 R001-R030，共 30 条 YAML 模板规则。
+4. `backend/src/main/resources/case5/rules.yml` 保留为打包资源和一致性样例，并通过测试保证与 CLI 样例规则内容一致。
+5. 通用模板能力已补齐 Case5 所需表达：`isInteger`、`NUMERIC_TYPE.allowBlank: false`、中文严重等级和中文规则分类。
+6. `source.yml` 支持通过只读 SQL 派生规则字段，例如订单日期、明细订单状态、支付订单存在性等，不修改 V3 表结构。
+7. Web Excel 导入继续使用 `ExcelImportService` 内置模板绑定，不读取 Case5 YAML；CLI 继续使用 YAML 规则包。
+8. 旧内置 R001-R030 执行分支保留为历史数据兜底，避免既有 Web 绑定直接失效。
+
+分路径边界：
+
+1. CLI 路径：以 `examples/case5-seed/validator.yml` 为入口，读取 V3 seed 业务表，按 YAML 规则包执行，适合演示、回归和新增业务场景复用。
+2. Web 路径：Excel 上传仍走内置模板绑定和现有 Web 演示链路，不依赖 `examples/case5-seed/rules.yml` 或 `backend/src/main/resources/case5/rules.yml`。
+3. 验收口径：两条路径分别验证规则来源和执行结果，不要求异常集合逐条完全一致；Case5 CLI 规则真值以用户提供的 30 条规则 SQL/伪代码为准。
+
+新增规则免改代码方式：
+
+1. 在新的 `source.yml` 中声明数据源，可以使用 `type: jdbc` 连接业务库，也可以使用只读 `sql` 派生规则所需字段。
+2. 在新的 `rules.yml` 中新增规则，填写 `ruleId`、`ruleName`、`category`、`severity`、`templateCode` 和 `templateParams`。
+3. 在 `validator.yml` 中指向对应的 `source.yml` 和 `rules.yml`。
+4. 先执行 `bin/data-validator lint --config <validator.yml>` 校验配置，再执行 `bin/data-validator run --config <validator.yml>`。
+5. 如果新业务规则无法由已有模板表达，应优先扩展通用模板能力，而不是把新业务规则写死进 Java 编号 switch。
+
+验收：
+
+1. `bin/data-validator lint --config examples/case5-seed/validator.yml` 返回 `0`。
+2. `bin/data-validator run --config examples/case5-seed/validator.yml --json --no-report` 执行 30 条规则。
+3. JSON summary 中 `sourceSummary.tableCount` 为 `5`，`sourceSummary.totalRows` 为 `70`。
+4. 当前 seed 会产生 68 条异常，其中 60 条严重、8 条警告；因为存在严重异常，CLI 返回退出码 `2`。
+5. Web Excel 导入测试继续验证内置模板绑定，避免 Web 导入依赖 YAML 文件。
+
+建议验证：
+
+1. `cd backend && mvn test`
+2. `bin/data-validator lint --config examples/case5-seed/validator.yml`
+3. `bin/data-validator run --config examples/case5-seed/validator.yml --json --no-report`
+
+## 5. 建议执行节奏
+
+阶段 10 到阶段 14 已完成第一版，当前工具已经具备“生成样板、lint 修复建议、片段扩展、AI 候选补充、Case5/V3 CLI 复现”的易用性闭环。后续执行节奏建议围绕稳定化和用户反馈收敛：
+
+1. 先持续维护 `examples/generic-validation`、`examples/generic-jdbc`、`examples/case5-seed` 三类样例，确保每次改动后仍能执行。
+2. 再根据真实使用反馈补充规则片段和 lint suggestion，优先解决高频配置错误。
+3. 最后再评估是否进入质量门禁、CI 摘要、规则覆盖摘要或 Web 工作台通用规则包接入。
+
+每个迭代完成前至少执行：
+
+1. 定向单测：覆盖本迭代新增能力。
+2. `mvn test`：确认 Web 与通用 CLI 现有链路不回退。
+3. CLI smoke：至少覆盖 `lint`、`run`、`recommend` 中与本迭代相关的命令。
+4. 样例验证：确保 `examples/generic-validation`、`examples/generic-file-data`、`examples/generic-jdbc`、`examples/distribution-minimal` 的 README 命令仍可执行。
+
+## 6. 暂缓事项
+
+1. 质量门禁、gate summary、CI 模板和覆盖摘要单独进入 `通用数据验证工具-CLI-质量门禁后续计划.md`。
+2. 文件数据源容量与 CSV 方言增强暂缓。
+3. Web 工作台通用规则包接入暂缓。
+
+## 7. 暂不做事项
+
+1. 不做权限、多租户、调度中心、审计后台。
+2. 不把 AI 自动判定接入规则执行。
+3. 不自动修改业务数据。
+4. 不在第一阶段直接替换赛题5 Web 主链路。
+5. 不在当前易用性阶段直接承诺超大文件流式处理、分片读取或分布式执行。
+6. 不在当前易用性阶段默认连接生产数据库；如后续做连接检查，必须由用户显式开启。

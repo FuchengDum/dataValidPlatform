@@ -23,6 +23,9 @@ public class GenericValidationReportWriter {
 
     public void writeReports(GenericValidationResult result, GenericValidationConfig.ValidationConfig config,
                              Path baseDir) {
+        if (config.isNoReport()) {
+            return;
+        }
         Path outputDir = resolve(baseDir, config.getOutputDir());
         try {
             Files.createDirectories(outputDir);
@@ -41,6 +44,10 @@ public class GenericValidationReportWriter {
                 Path path = outputDir.resolve(fileName("html"));
                 write(path, html(result));
                 result.getReports().put("html", path.toString());
+            } else if ("junit".equals(format) || "junitxml".equals(format)) {
+                Path path = outputDir.resolve(fileName("xml"));
+                write(path, junit(result));
+                result.getReports().put("junit", path.toString());
             } else {
                 Path path = outputDir.resolve(fileName("md"));
                 write(path, markdown(result));
@@ -88,6 +95,47 @@ public class GenericValidationReportWriter {
                 + "</body></html>";
     }
 
+    private String junit(GenericValidationResult result) {
+        int failures = result.getFindingCount();
+        int tests = Math.max(1, failures);
+        StringBuilder builder = new StringBuilder();
+        builder.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        builder.append("<testsuite name=\"generic-validation\" tests=\"").append(tests)
+                .append("\" failures=\"").append(failures)
+                .append("\" errors=\"0\" skipped=\"0\" time=\"")
+                .append(result.getDurationMillis() / 1000.0).append("\">\n");
+        if (result.getFindings() == null || result.getFindings().isEmpty()) {
+            builder.append("  <testcase classname=\"generic-validation\" name=\"no-findings\"/>\n");
+        } else {
+            for (ValidationFinding finding : result.getFindings()) {
+                builder.append("  <testcase classname=\"")
+                        .append(xml(safe(finding.getTableName())))
+                        .append("\" name=\"")
+                        .append(xml(safe(finding.getRuleId())))
+                        .append("\">\n");
+                builder.append("    <failure message=\"")
+                        .append(xml(safe(finding.getDescription())))
+                        .append("\" type=\"")
+                        .append(finding.getSeverity())
+                        .append("\">")
+                        .append(xml(failureText(finding)))
+                        .append("</failure>\n");
+                builder.append("  </testcase>\n");
+            }
+        }
+        builder.append("</testsuite>\n");
+        return builder.toString();
+    }
+
+    private String failureText(ValidationFinding finding) {
+        return "ruleId=" + safe(finding.getRuleId())
+                + ", table=" + safe(finding.getTableName())
+                + ", recordKey=" + safe(finding.getRecordKey())
+                + ", field=" + safe(finding.getFieldName())
+                + ", expected=" + safe(finding.getExpectedValue())
+                + ", actual=" + safe(finding.getActualValue());
+    }
+
     private void write(Path path, String content) {
         try {
             Files.writeString(path, content, StandardCharsets.UTF_8);
@@ -107,5 +155,14 @@ public class GenericValidationReportWriter {
 
     private String safe(String value) {
         return value == null ? "" : value.replace("|", "\\|");
+    }
+
+    private String xml(String value) {
+        return value == null ? "" : value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&apos;");
     }
 }

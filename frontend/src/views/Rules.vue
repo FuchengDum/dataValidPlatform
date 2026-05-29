@@ -77,7 +77,7 @@
           <div class="rules-scroll">
             <div v-for="rule in filteredRules" :key="rule.ruleId"
                  class="rule-item"
-                 :class="{ active: store.getters.selectedRule?.ruleId === rule.ruleId }"
+                 :class="{ active: selectedRule?.ruleId === rule.ruleId }"
                  @click="selectRule(rule.ruleId)">
               <div class="rule-header">
                 <div class="rule-id">{{ rule.ruleId }}</div>
@@ -99,12 +99,12 @@
         </div>
 
         <div class="rule-detail">
-          <div v-if="store.getters.selectedRule" class="detail-content">
+          <div v-if="selectedRule" class="detail-content">
             <div class="detail-header">
-              <h3>{{ store.getters.selectedRule.ruleId }} {{ store.getters.selectedRule.ruleName }}</h3>
+              <h3>{{ selectedRule.ruleId }} {{ selectedRule.ruleName }}</h3>
               <div class="detail-actions">
-                <button class="secondary-btn small" :disabled="!store.getters.selectedRule.templateCode || store.state.loading" @click="switchBinding">
-                  {{ store.getters.selectedRule.executorType === 'TEMPLATE' ? '切回内置' : '启用模板' }}
+                <button class="secondary-btn small" :disabled="!selectedRule.templateCode || store.state.loading" @click="switchBinding">
+                  {{ selectedRule.executorType === 'TEMPLATE' ? '切回内置' : '启用模板' }}
                 </button>
                 <button class="primary-btn small" :disabled="store.state.loading" @click="recommendRule">
                   AI 推荐
@@ -112,8 +112,8 @@
               </div>
             </div>
 
-            <div v-if="recommendationErrors[store.getters.selectedRule.ruleId]" class="error-box">
-              {{ recommendationErrors[store.getters.selectedRule.ruleId] }}
+            <div v-if="recommendationErrors[selectedRule.ruleId]" class="error-box">
+              {{ recommendationErrors[selectedRule.ruleId] }}
             </div>
 
             <div class="binding-compare">
@@ -123,13 +123,13 @@
                 </div>
                 <div class="card-content">
                   <div class="binding-type">
-                    {{ labelExecutor(store.getters.selectedRule.executorType) }}
-                    <span v-if="store.getters.selectedRule.templateCode">
-                      · {{ store.getters.selectedRule.templateCode }}
+                    {{ labelExecutor(selectedRule.executorType) }}
+                    <span v-if="selectedRule.templateCode">
+                      · {{ selectedRule.templateCode }}
                     </span>
                   </div>
-                  <div v-if="paramEntries(store.getters.selectedRule.templateParams).length > 0" class="params-list">
-                    <div v-for="param in paramEntries(store.getters.selectedRule.templateParams)" :key="param.key" class="param-item">
+                  <div v-if="paramEntries(selectedRule.templateParams).length > 0" class="params-list">
+                    <div v-for="param in paramEntries(selectedRule.templateParams)" :key="param.key" class="param-item">
                       <span class="param-key">{{ param.key }}</span>
                       <span class="param-value">{{ param.value }}</span>
                     </div>
@@ -209,7 +209,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive } from 'vue'
+import { computed, reactive } from 'vue'
 import store from '../store'
 import { fetchRules, recommendRuleBinding, updateRuleBinding } from '../api/client'
 import StatusMessage from '../components/StatusMessage.vue'
@@ -240,9 +240,11 @@ const filteredRules = computed(() => {
   })
 })
 
+const selectedRule = computed(() => store.getters.selectedRule.value)
+
 const selectedRecommendation = computed(() => {
-  if (!store.getters.selectedRule) return null
-  return recommendations[store.getters.selectedRule.ruleId] || null
+  if (!selectedRule.value?.ruleId) return null
+  return recommendations[selectedRule.value.ruleId] || null
 })
 
 const templateBoundCount = computed(() => {
@@ -323,19 +325,20 @@ function stringifyParam(value) {
 }
 
 async function recommendRule() {
-  if (!store.getters.selectedRule) return
+  const rule = selectedRule.value
+  if (!rule?.ruleId) return
   
   store.actions.setLoading(true)
   store.actions.setMessage('')
   store.actions.setError('')
   
   try {
-    const result = await recommendRuleBinding(store.state.dataset.datasetId, store.getters.selectedRule.ruleId)
-    recommendations[store.getters.selectedRule.ruleId] = result
-    delete recommendationErrors[store.getters.selectedRule.ruleId]
+    const result = await recommendRuleBinding(store.state.dataset.datasetId, rule.ruleId)
+    recommendations[rule.ruleId] = result
+    delete recommendationErrors[rule.ruleId]
     store.actions.setMessage('规则模板推荐已生成')
   } catch (err) {
-    recommendationErrors[store.getters.selectedRule.ruleId] = err.message || '推荐失败'
+    recommendationErrors[rule.ruleId] = err.message || '推荐失败'
     store.actions.setError(err.message || '推荐失败')
   } finally {
     store.actions.setLoading(false)
@@ -366,18 +369,19 @@ async function batchRecommend() {
 }
 
 async function switchBinding() {
-  if (!store.getters.selectedRule?.templateCode) return
+  const rule = selectedRule.value
+  if (!rule?.ruleId || !rule.templateCode) return
   
   store.actions.setLoading(true)
   store.actions.setMessage('')
   store.actions.setError('')
   
   try {
-    const nextType = store.getters.selectedRule.executorType === 'TEMPLATE' ? 'BUILTIN' : 'TEMPLATE'
-    await updateRuleBinding(store.state.dataset.datasetId, store.getters.selectedRule.ruleId, {
+    const nextType = rule.executorType === 'TEMPLATE' ? 'BUILTIN' : 'TEMPLATE'
+    await updateRuleBinding(store.state.dataset.datasetId, rule.ruleId, {
       executorType: nextType,
-      templateCode: store.getters.selectedRule.templateCode,
-      templateParams: store.getters.selectedRule.templateParams || {}
+      templateCode: rule.templateCode,
+      templateParams: rule.templateParams || {}
     })
     
     const rules = await fetchRules(store.state.dataset.datasetId)
@@ -391,21 +395,22 @@ async function switchBinding() {
 }
 
 async function applyRecommendation() {
-  if (!store.getters.selectedRule || !selectedRecommendation.value) return
+  const rule = selectedRule.value
+  if (!rule?.ruleId || !selectedRecommendation.value) return
   
   store.actions.setLoading(true)
   store.actions.setMessage('')
   store.actions.setError('')
   
   try {
-    await updateRuleBinding(store.state.dataset.datasetId, store.getters.selectedRule.ruleId, {
+    await updateRuleBinding(store.state.dataset.datasetId, rule.ruleId, {
       executorType: 'TEMPLATE',
       templateCode: selectedRecommendation.value.templateCode,
       templateParams: selectedRecommendation.value.templateParams || {}
     })
     
-    delete recommendations[store.getters.selectedRule.ruleId]
-    delete recommendationErrors[store.getters.selectedRule.ruleId]
+    delete recommendations[rule.ruleId]
+    delete recommendationErrors[rule.ruleId]
     
     const rules = await fetchRules(store.state.dataset.datasetId)
     store.actions.setRules(rules)

@@ -1,0 +1,527 @@
+schemaVersion: 1
+rules:
+  - ruleId: R001
+    ruleName: 金额非负校验
+    category: 单表校验-字段约束
+    severity: 严重
+    description: 订单金额、实付金额、优惠金额均不得为负数
+    applicableTables: [t_order]
+    templateCode: NON_NEGATIVE
+    templateParams:
+      tableName: t_order
+      fields: [订单金额, 实付金额, 优惠金额]
+  - ruleId: R002
+    ruleName: 必填字段非空校验
+    category: 单表校验-字段约束
+    severity: 严重
+    description: 用户ID、订单状态、下单时间、收货地址为必填字段
+    applicableTables: [t_order]
+    templateCode: NOT_NULL
+    templateParams:
+      tableName: t_order
+      fields: [用户ID, 订单状态, 下单时间, 收货地址]
+  - ruleId: R003
+    ruleName: 金额类型校验
+    category: 单表校验-字段约束
+    severity: 严重
+    description: 金额字段必须为数值类型
+    applicableTables: [t_order]
+    templateCode: NUMERIC_TYPE
+    templateParams:
+      tableName: t_order
+      fields: [订单金额, 实付金额]
+      allowBlank: false
+  - ruleId: R004
+    ruleName: 优惠金额合理性校验
+    category: 单表校验-业务规则
+    severity: 警告
+    description: 优惠金额不得超过订单金额的50%
+    applicableTables: [t_order]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_order
+      conditions:
+        - left: { field: 优惠金额 }
+          operator: "<="
+          right: { op: "*", left: { field: 订单金额 }, right: { literal: 0.5 } }
+  - ruleId: R005
+    ruleName: 订单金额非零校验
+    category: 单表校验-业务规则
+    severity: 严重
+    description: 已支付订单的订单金额不得为0
+    applicableTables: [t_order]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_order
+      conditions:
+        - when:
+            left: { field: 订单状态 }
+            operator: "=="
+            right: { literal: 已支付 }
+          left: { field: 订单金额 }
+          operator: "!="
+          right: { literal: 0 }
+  - ruleId: R006
+    ruleName: 实付金额与订单金额关系校验
+    category: 单表校验-业务规则
+    severity: 严重
+    description: 实付金额 = 订单金额 - 优惠金额，且实付金额≤订单金额
+    applicableTables: [t_order]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_order
+      conditions:
+        - left: { field: 实付金额 }
+          operator: "=="
+          right: { op: "-", left: { field: 订单金额 }, right: { field: 优惠金额 } }
+        - left: { field: 实付金额 }
+          operator: "<="
+          right: { field: 订单金额 }
+  - ruleId: R007
+    ruleName: 商品售价成本价关系校验
+    category: 单表校验-业务规则
+    severity: 警告
+    description: 商品售价不得低于成本价
+    applicableTables: [t_product]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_product
+      conditions:
+        - when:
+            left: { field: 上架状态 }
+            operator: "=="
+            right: { literal: 上架 }
+          left: { field: 售价 }
+          operator: ">="
+          right: { field: 成本价 }
+  - ruleId: R008
+    ruleName: 库存非负校验
+    category: 单表校验-字段约束
+    severity: 严重
+    description: 商品库存数量不得为负数
+    applicableTables: [t_product]
+    templateCode: NON_NEGATIVE
+    templateParams:
+      tableName: t_product
+      fields: [库存数量]
+  - ruleId: R009
+    ruleName: 上架商品库存校验
+    category: 单表校验-业务规则
+    severity: 警告
+    description: 上架状态商品库存数量应大于0
+    applicableTables: [t_product]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_product
+      conditions:
+        - when:
+            left: { field: 上架状态 }
+            operator: "=="
+            right: { literal: 上架 }
+          left: { field: 库存数量 }
+          operator: ">"
+          right: { literal: 0 }
+  - ruleId: R010
+    ruleName: 商品价格非零校验
+    category: 单表校验-字段约束
+    severity: 严重
+    description: 上架商品的成本价和售价均不得为0
+    applicableTables: [t_product]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_product
+      conditions:
+        - when:
+            left: { field: 上架状态 }
+            operator: "=="
+            right: { literal: 上架 }
+          left: { field: 成本价 }
+          operator: "!="
+          right: { literal: 0 }
+        - when:
+            left: { field: 上架状态 }
+            operator: "=="
+            right: { literal: 上架 }
+          left: { field: 售价 }
+          operator: "!="
+          right: { literal: 0 }
+  - ruleId: R011
+    ruleName: 明细小计金额校验
+    category: 单表校验-业务规则
+    severity: 严重
+    description: 小计金额 = 单价 × 数量
+    applicableTables: [t_order_item]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_order_item
+      conditions:
+        - left: { field: 小计金额 }
+          operator: "=="
+          right: { op: "*", left: { field: 单价 }, right: { field: 数量 } }
+  - ruleId: R012
+    ruleName: 明细数量校验
+    category: 单表校验-字段约束
+    severity: 严重
+    description: 商品数量必须为正整数
+    applicableTables: [t_order_item]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_order_item
+      conditions:
+        - left: { field: 数量 }
+          operator: ">"
+          right: { literal: 0 }
+        - left: { field: 数量 }
+          operator: isInteger
+  - ruleId: R013
+    ruleName: 支付金额非负校验
+    category: 单表校验-字段约束
+    severity: 严重
+    description: 支付金额和退款金额不得为负数
+    applicableTables: [t_payment]
+    templateCode: NON_NEGATIVE
+    templateParams:
+      tableName: t_payment
+      fields: [支付金额, 退款金额]
+  - ruleId: R014
+    ruleName: 支付金额零值校验
+    category: 单表校验-业务规则
+    severity: 严重
+    description: 支付成功的记录支付金额不得为0
+    applicableTables: [t_payment]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_payment
+      conditions:
+        - when:
+            left: { field: 支付状态 }
+            operator: "=="
+            right: { literal: 支付成功 }
+          left: { field: 支付金额 }
+          operator: "!="
+          right: { literal: 0 }
+  - ruleId: R015
+    ruleName: 库存变动连续性校验
+    category: 单表校验-业务规则
+    severity: 严重
+    description: 变动后库存 = 变动前库存 + 变动数量
+    applicableTables: [t_inventory_log]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_inventory_log
+      conditions:
+        - left: { field: 变动后库存 }
+          operator: "=="
+          right:
+            op: "+"
+            left: { field: 变动前库存 }
+            right:
+              if:
+                left: { field: 变动类型 }
+                operator: "=="
+                right: { literal: 入库 }
+              then: { field: 变动数量 }
+              else: { op: "-", left: { literal: 0 }, right: { field: 变动数量 } }
+  - ruleId: R016
+    ruleName: 入库数量正数校验
+    category: 单表校验-字段约束
+    severity: 严重
+    description: 入库变动数量必须为正数，出库变动数量必须为正数
+    applicableTables: [t_inventory_log]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_inventory_log
+      conditions:
+        - when:
+            left: { field: 变动类型 }
+            operator: in
+            right: [入库, 出库]
+          left: { field: 变动数量 }
+          operator: ">="
+          right: { literal: 0 }
+  - ruleId: R017
+    ruleName: 订单-明细金额一致性
+    category: 多表关联核对
+    severity: 严重
+    description: 订单金额应等于其所有明细小计金额之和
+    applicableTables: [t_order, t_order_item]
+    templateCode: AGGREGATE_ASSERT
+    templateParams:
+      source: t_order_item
+      target: t_order
+      sourceWhere:
+        left: { field: 订单存在 }
+        operator: "=="
+        right: { literal: true }
+      groupBy:
+        - sourceField: 订单ID
+          targetField: 订单ID
+      aggregate: { fn: SUM, field: 小计金额 }
+      assert:
+        op: "=="
+        targetField: 订单金额
+        tolerance: "0.01"
+  - ruleId: R018
+    ruleName: 明细-商品关联校验
+    category: 多表关联核对
+    severity: 严重
+    description: 明细中的商品ID必须在商品表中存在
+    applicableTables: [t_order_item, t_product]
+    templateCode: RELATION_EXISTS
+    templateParams:
+      source: t_order_item
+      target: t_product
+      keys:
+        - sourceField: 商品ID
+          targetField: 商品ID
+      expectExists: true
+  - ruleId: R019
+    ruleName: 明细-商品价格一致性
+    category: 多表关联核对
+    severity: 警告
+    description: 明细中的单价应与商品表中的售价一致
+    applicableTables: [t_order_item, t_product]
+    templateCode: JOIN_ASSERT
+    templateParams:
+      source: t_order_item
+      target: t_product
+      keys:
+        - sourceField: 商品ID
+          targetField: 商品ID
+      sourceExists:
+        target: t_product
+        keys:
+          - sourceField: 商品ID
+            targetField: 商品ID
+      assert:
+        left: { sourceField: 单价 }
+        op: "=="
+        right: { targetField: 售价 }
+        tolerance: "0.01"
+  - ruleId: R020
+    ruleName: 订单-支付金额一致性
+    category: 多表关联核对
+    severity: 严重
+    description: 订单实付金额应等于支付表中对应支付金额之和
+    applicableTables: [t_order, t_payment]
+    templateCode: AGGREGATE_ASSERT
+    templateParams:
+      source: t_payment
+      target: t_order
+      sourceWhere:
+        left: { field: 订单存在 }
+        operator: "=="
+        right: { literal: true }
+      groupBy:
+        - sourceField: 订单ID
+          targetField: 订单ID
+      aggregate: { fn: SUM, field: 支付金额 }
+      assert:
+        op: "=="
+        targetField: 实付金额
+        tolerance: "0.01"
+  - ruleId: R021
+    ruleName: 订单-支付状态一致性
+    category: 多表关联核对
+    severity: 严重
+    description: 已支付/已发货/已完成订单必须有支付成功记录
+    applicableTables: [t_order, t_payment]
+    templateCode: RELATION_EXISTS
+    templateParams:
+      source: t_order
+      target: t_payment
+      sourceWhere:
+        left: { field: 订单状态 }
+        operator: in
+        right: [已支付, 已发货, 已完成]
+      targetWhere:
+        left: { field: 支付状态 }
+        operator: "=="
+        right: { literal: 支付成功 }
+      keys:
+        - sourceField: 订单ID
+          targetField: 订单ID
+      expectExists: true
+  - ruleId: R022
+    ruleName: 订单-库存扣减一致性
+    category: 多表关联核对
+    severity: 严重
+    description: 已支付订单的每条明细应有对应的库存出库记录，出库数量应与明细数量一致
+    applicableTables: [t_order_item, t_inventory_log]
+    templateCode: JOIN_ASSERT
+    templateParams:
+      source: t_order_item
+      target: t_inventory_log
+      sourceWhere:
+        left: { field: 订单状态 }
+        operator: in
+        right: [已支付, 已发货, 已完成]
+      keys:
+        - sourceField: 订单ID
+          targetField: 关联订单ID
+        - sourceField: 商品ID
+          targetField: 商品ID
+      assert:
+        left: { sourceField: 数量 }
+        op: "=="
+        right: { targetField: 变动数量 }
+        tolerance: "0.01"
+  - ruleId: R023
+    ruleName: 支付-订单关联存在性
+    category: 多表关联核对
+    severity: 严重
+    description: 支付记录中的订单ID必须在订单表中存在
+    applicableTables: [t_payment, t_order]
+    templateCode: RELATION_EXISTS
+    templateParams:
+      source: t_payment
+      target: t_order
+      keys:
+        - sourceField: 订单ID
+          targetField: 订单ID
+      expectExists: true
+  - ruleId: R024
+    ruleName: 支付-订单用户一致性
+    category: 多表关联核对
+    severity: 严重
+    description: 支付记录中的用户ID应与订单中的用户ID一致
+    applicableTables: [t_payment, t_order]
+    templateCode: JOIN_ASSERT
+    templateParams:
+      source: t_payment
+      target: t_order
+      keys:
+        - sourceField: 订单ID
+          targetField: 订单ID
+      sourceExists:
+        target: t_order
+        keys:
+          - sourceField: 订单ID
+            targetField: 订单ID
+      assert:
+        left: { sourceField: 用户ID }
+        op: "=="
+        right: { targetField: 用户ID }
+  - ruleId: R025
+    ruleName: 订单状态时间逻辑校验
+    category: 指标一致性校验
+    severity: 严重
+    description: 待支付订单不应有支付时间；已支付/已发货/已完成订单支付时间不得早于下单时间
+    applicableTables: [t_order]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: t_order
+      conditions:
+        - when:
+            left: { field: 订单状态 }
+            operator: "=="
+            right: { literal: 待支付 }
+          left: { field: 支付时间 }
+          operator: isNull
+        - when:
+            and:
+              - left: { field: 订单状态 }
+                operator: in
+                right: [已支付, 已发货, 已完成]
+              - left: { field: 支付时间 }
+                operator: isNotNull
+          left: { field: 支付时间 }
+          operator: ">="
+          right: { field: 下单时间 }
+  - ruleId: R026
+    ruleName: 订单状态流转校验
+    category: 指标一致性校验
+    severity: 严重
+    description: 已取消订单的实付金额应为0或退款金额等于支付金额
+    applicableTables: [t_order, t_payment]
+    templateCode: RELATION_EXISTS
+    templateParams:
+      source: t_order
+      target: t_payment
+      sourceWhere:
+        left: { field: 订单状态 }
+        operator: "=="
+        right: { literal: 已取消 }
+      targetWhere:
+        and:
+          - left: { field: 退款金额 }
+            operator: "=="
+            right: { literal: 0 }
+          - left: { field: 支付状态 }
+            operator: "=="
+            right: { literal: 支付成功 }
+      keys:
+        - sourceField: 订单ID
+          targetField: 订单ID
+      expectExists: false
+  - ruleId: R027
+    ruleName: 库存变动后非负校验
+    category: 指标一致性校验
+    severity: 严重
+    description: 出库后库存不得为负数
+    applicableTables: [t_inventory_log]
+    templateCode: NON_NEGATIVE
+    templateParams:
+      tableName: t_inventory_log
+      fields: [变动后库存]
+  - ruleId: R028
+    ruleName: 下架商品出库校验
+    category: 指标一致性校验
+    severity: 警告
+    description: 已下架商品不应有出库记录
+    applicableTables: [t_inventory_log, t_product]
+    templateCode: RELATION_EXISTS
+    templateParams:
+      source: t_inventory_log
+      target: t_product
+      sourceWhere:
+        left: { field: 变动类型 }
+        operator: "=="
+        right: { literal: 出库 }
+      targetWhere:
+        left: { field: 上架状态 }
+        operator: "=="
+        right: { literal: 已下架 }
+      keys:
+        - sourceField: 商品ID
+          targetField: 商品ID
+      expectExists: false
+  - ruleId: R029
+    ruleName: 同一订单重复支付校验
+    category: 指标一致性校验
+    severity: 严重
+    description: 同一订单不应有多条支付成功记录
+    applicableTables: [t_payment]
+    templateCode: DUPLICATE_ASSERT
+    templateParams:
+      table: t_payment
+      groupBy: [订单ID]
+      where:
+        left: { field: 支付状态 }
+        operator: "=="
+        right: { literal: 支付成功 }
+      assert:
+        op: "<="
+        count: 1
+  - ruleId: R030
+    ruleName: 订单金额与明细汇总一致性
+    category: 指标一致性校验
+    severity: 严重
+    description: "指标层: 日订单金额汇总 = 日明细小计汇总"
+    applicableTables: [t_order, t_order_item]
+    templateCode: AGGREGATE_ASSERT
+    templateParams:
+      source: t_order_item
+      target: t_order
+      sourceWhere:
+        left: { field: 订单存在 }
+        operator: "=="
+        right: { literal: true }
+      groupBy:
+        - sourceField: 日期
+          targetField: 日期
+      aggregate: { fn: SUM, field: 小计金额 }
+      assert:
+        op: "=="
+        aggregate: { fn: SUM, field: 订单金额 }
+        tolerance: "0.01"

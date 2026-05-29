@@ -1,11 +1,13 @@
-# 赛题5-业务数据准确性验证工具部署演示操作文档
+# 赛题5：业务数据准确性验证工具-Web平台与CLI-部署演示操作文档
 
 本文档用于指导将本项目迁移到其他电脑后，完成前后端工程构建、启动和演示使用。项目采用前后端分离结构：
 
 ```text
 competition/
+  bin/        CLI 启动脚本
   backend/    Spring Boot + Apache POI + H2 + Spring Data JPA
   frontend/   Vue 3 + Vite
+  examples/   CLI 最小分发样例
   各赛题输入案例/
     赛题5-业务数据准确性验证工具-输入案例.xlsx
 ```
@@ -16,8 +18,8 @@ competition/
 
 | 软件 | 建议版本 | 用途 |
 |---|---:|---|
-| JDK | 11 或以上 | 运行 Spring Boot 后端 |
-| Maven | 3.8 或以上 | 构建后端工程 |
+| JDK | 11 或以上 | 运行 Spring Boot 后端和 CLI Jar |
+| Maven | 3.8 或以上 | 构建后端工程和 CLI Jar |
 | Node.js | 18 或以上 | 构建和运行前端工程 |
 | npm | 9 或以上 | 安装前端依赖 |
 | 浏览器 | Chrome / Edge | 访问演示页面 |
@@ -38,11 +40,17 @@ npm -v
 
 ```text
 backend/
+bin/
+examples/distribution-minimal/
+examples/generic-validation/
+examples/generic-jdbc/
 frontend/
 各赛题输入案例/
-赛题5-业务数据准确性验证工具需求文档.md
-赛题5-业务数据准确性验证工具设计文档.md
-赛题5-业务数据准确性验证工具部署演示操作文档.md
+通用数据验证工具-CLI-规则片段库.md
+通用数据验证工具-CLI-AI推荐补充入口.md
+赛题5-业务数据准确性验证工具-Web平台-需求文档.md
+赛题5-业务数据准确性验证工具-Web平台-设计文档.md
+赛题5-业务数据准确性验证工具-Web平台与CLI-部署演示操作文档.md
 ```
 
 可以不拷贝以下运行产物，迁移后重新构建即可：
@@ -504,7 +512,291 @@ http://localhost:8080
 
 说明：当前推荐演示方式仍是前后端分别启动，排查问题更直接。
 
-## 8. MySQL 扩展启动方式
+## 8. CLI 部署演示方式
+
+CLI 适合在没有浏览器页面、需要脚本化演示、或需要把工具作为轻量分发包交付时使用。CLI 与后端服务复用同一个 Jar，不需要启动 Web 服务。
+
+### 8.1 CLI 分发目录
+
+从仓库根目录打包后，CLI 演示至少需要保留以下目录结构：
+
+```text
+competition/
+  bin/data-validator
+  backend/target/data-validator-0.1.0.jar
+  examples/distribution-minimal/
+  examples/generic-validation/
+  examples/generic-jdbc/
+```
+
+`examples/distribution-minimal/` 是最小可运行样例，包含：
+
+| 文件 | 说明 |
+|---|---|
+| `validator.yml` | CLI 主配置，声明数据源、规则包、输出目录和失败阈值 |
+| `source.yml` | 内联样例数据 |
+| `rules.yml` | 通用规则包 |
+| `expected-result.md` | 样例预期结果和退出码说明 |
+
+### 8.2 构建 CLI Jar
+
+在新电脑或演示机器上先构建后端 Jar：
+
+```bash
+cd competition/backend
+mvn package -DskipTests
+cd ..
+```
+
+构建完成后确认 CLI 可执行：
+
+```bash
+bin/data-validator --version
+```
+
+预期输出：
+
+```text
+data-validator 0.1.0
+```
+
+如果脚本没有执行权限，可在 macOS 或 Linux 上执行：
+
+```bash
+chmod +x bin/data-validator
+```
+
+Windows PowerShell 可直接使用 Jar：
+
+```powershell
+java -jar backend/target/data-validator-0.1.0.jar --version
+```
+
+### 8.3 运行最小样例
+
+先校验配置、规则和数据源是否能被 CLI 正常读取：
+
+```bash
+bin/data-validator lint --config examples/distribution-minimal/validator.yml
+```
+
+再执行完整校验：
+
+```bash
+bin/data-validator run --config examples/distribution-minimal/validator.yml
+```
+
+最小样例会故意命中 1 条 `CRITICAL` 异常，用于演示质量门禁。因此 `run` 命令返回退出码 `2` 是预期结果，不表示 CLI 执行失败。
+
+### 8.4 JSON 输出和无报告模式
+
+如果演示重点是脚本集成，可使用 JSON 输出：
+
+```bash
+bin/data-validator run \
+  --config examples/distribution-minimal/validator.yml \
+  --json \
+  --no-report
+```
+
+也可以绕过主配置，直接指定规则包和数据源：
+
+```bash
+bin/data-validator validate \
+  --rules examples/distribution-minimal/rules.yml \
+  --source examples/distribution-minimal/source.yml \
+  --json \
+  --no-report
+```
+
+常用退出码：
+
+| 退出码 | 含义 |
+|---:|---|
+| `0` | 执行成功，且未达到失败阈值 |
+| `1` | 参数、配置、文件路径或运行时错误 |
+| `2` | 执行成功，但命中达到失败阈值的异常 |
+
+### 8.5 规则推荐演示
+
+CLI 可基于元数据和已有规则生成候选规则建议：
+
+```bash
+bin/data-validator recommend \
+  --rules examples/distribution-minimal/rules.yml \
+  --metadata examples/distribution-minimal/source.yml
+```
+
+该命令用于演示“已有规则资产 + 数据元信息”的规则扩展能力，不会修改原规则文件。
+
+### 8.6 JDBC 快速上手演示
+
+阶段 10 新增了 `init jdbc`，用于在空目录中生成可直接运行的 JDBC 校验样板。演示时建议先使用订单履约模板，它默认使用 H2 内存库，不需要数据库账号和密码。
+
+```bash
+DEMO_DIR="/tmp/order-fulfillment-demo-$(date +%Y%m%d%H%M%S)"
+
+bin/data-validator init jdbc \
+  --template order-fulfillment \
+  --output "$DEMO_DIR"
+```
+
+生成目录包含：
+
+```text
+validator.yml
+source.yml
+rules.yml
+README.md
+```
+
+先检查生成的配置和规则：
+
+```bash
+bin/data-validator lint \
+  --config "$DEMO_DIR/validator.yml" \
+  --output "$DEMO_DIR/reports/lint.json"
+```
+
+再执行校验：
+
+```bash
+bin/data-validator run \
+  --config "$DEMO_DIR/validator.yml" \
+  --json \
+  --no-report
+```
+
+订单履约样板会稳定执行 30 条规则，并命中样例数据中的异常。返回退出码 `2` 表示发现达到失败阈值的数据问题，不表示工具运行失败。
+
+### 8.7 lint 修复建议演示
+
+阶段 11 增强了 lint 的结构化修复建议。演示时可以故意把生成目录中的 `rules.yml` 某个字段名改错，再运行：
+
+```bash
+bin/data-validator lint \
+  --config "$DEMO_DIR/validator.yml" \
+  --output "$DEMO_DIR/reports/lint-after-edit.json"
+```
+
+输出 JSON 中每个问题包含：
+
+```text
+code
+message
+path
+suggestion
+```
+
+讲解重点：
+
+1. `path` 指出具体配置位置，例如 `rules[0].templateParams.fields[0]`。
+2. `suggestion` 会给出可替换字段、YAML 片段或安全配置建议。
+3. JDBC 密码、token、secret 不会被回显到错误建议中。
+
+### 8.8 规则片段库演示
+
+阶段 12 新增了规则片段库。推荐演示顺序是：先看片段，再复制片段改字段，最后运行 lint。
+
+可直接验证内置片段包：
+
+```bash
+bin/data-validator lint \
+  --rules examples/generic-jdbc/rule-snippets.yml \
+  --metadata examples/generic-jdbc/source.yml \
+  --output examples/generic-jdbc/reports/rule-snippets-lint.json
+```
+
+执行片段包：
+
+```bash
+bin/data-validator validate \
+  --rules examples/generic-jdbc/rule-snippets.yml \
+  --source examples/generic-jdbc/source.yml \
+  --output examples/generic-jdbc/reports
+```
+
+片段库覆盖 8 类常见规则：非空、非负、数值类型、金额关系、跨表存在、关联断言、聚合一致性和重复校验。详细说明见仓库根目录：
+
+```text
+通用数据验证工具-CLI-规则片段库.md
+```
+
+### 8.9 AI 推荐作为补充入口演示
+
+阶段 13 将 `recommend` 明确为规则片段库之后的补充入口。推荐话术是：能用片段表达的规则优先复制片段；片段无法覆盖时，再生成候选规则包供人工审阅。
+
+生成推荐 JSON 和候选规则包：
+
+```bash
+bin/data-validator recommend \
+  --rules examples/generic-validation/rules.yml \
+  --metadata examples/generic-validation/source.yml \
+  --output examples/generic-validation/reports/recommendations.json \
+  --candidate-rules examples/generic-validation/reports/rules.recommended.yml
+```
+
+如需演示 AI prompt 和模型响应落盘，可增加 `--debug-ai`：
+
+```bash
+bin/data-validator recommend \
+  --rules examples/generic-validation/rules.yml \
+  --metadata examples/generic-validation/source.yml \
+  --output examples/generic-validation/reports/recommendations.json \
+  --candidate-rules examples/generic-validation/reports/rules.recommended.yml \
+  --debug-ai examples/generic-validation/reports/ai-debug
+```
+
+推荐结果 JSON 重点看：
+
+| 字段 | 说明 |
+|---|---|
+| `diff` | 原始规则、推荐模板、推荐参数和推荐原因 |
+| `confidence` | 推荐置信度 |
+| `warningCategories` | 字段缺失、模板不支持、AI 降级、安全拒绝等分类 |
+| `candidateGenerated` | 是否写入候选规则包 |
+
+候选规则包只写入 `--candidate-rules` 指定的新文件，不会覆盖正式 `rules.yml`。低置信度、字段缺失、模板不支持、AI 降级或安全拒绝时，只输出推荐 JSON，不生成可执行候选规则。
+
+详细边界见仓库根目录：
+
+```text
+通用数据验证工具-CLI-AI推荐补充入口.md
+```
+
+### 8.10 指定 Jar 路径和 JVM 参数
+
+默认脚本会查找：
+
+```text
+backend/target/data-validator-0.1.0.jar
+```
+
+如果分发包中的 Jar 放在其他目录，可通过环境变量指定：
+
+```bash
+DATA_VALIDATOR_JAR=/opt/data-validator/data-validator-0.1.0.jar \
+bin/data-validator --version
+```
+
+如需调整 JVM 参数：
+
+```bash
+JAVA_OPTS="-Xmx512m" \
+bin/data-validator run --config examples/distribution-minimal/validator.yml
+```
+
+### 8.11 CLI 报告产物
+
+不加 `--no-report` 时，最小样例会在运行时生成报告目录：
+
+```text
+examples/distribution-minimal/reports/
+```
+
+该目录是运行产物，迁移源码或制作干净分发包时可以不包含，演示前重新执行 CLI 会自动生成。`examples/generic-validation/reports/`、`examples/generic-jdbc/reports/` 和 `init jdbc` 生成目录下的 `reports/` 同样属于演示产物。
+
+## 9. MySQL 扩展启动方式
 
 当前演示默认使用 H2，不需要安装 MySQL。如需验证 MySQL profile，需要准备 MySQL 数据库，并设置环境变量：
 
@@ -529,9 +821,9 @@ java -jar target/data-validator-0.1.0.jar --spring.profiles.active=mysql
 
 注意：MySQL 方案用于后续扩展和持久化演示数据；比赛 MVP 演示建议使用默认 H2。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 端口被占用
+### 10.1 端口被占用
 
 现象：
 
@@ -551,7 +843,7 @@ java -jar target/data-validator-0.1.0.jar --server.port=8081
 VITE_API_BASE=http://localhost:8081 npm run dev
 ```
 
-### 9.2 前端页面能打开，但接口请求失败
+### 10.2 前端页面能打开，但接口请求失败
 
 检查项：
 
@@ -560,7 +852,7 @@ VITE_API_BASE=http://localhost:8081 npm run dev
 3. 前端 `VITE_API_BASE` 是否指向正确后端地址。
 4. 浏览器控制台是否有跨域或网络错误。
 
-### 9.3 上传完整 Excel 后提示规则主键冲突
+### 10.3 上传完整 Excel 后提示规则主键冲突
 
 原因通常是旧版本数据库结构仍在运行，`rule_definition` 只使用了 `rule_id` 作为主键。
 
@@ -576,11 +868,11 @@ backend/src/main/resources/db/migration/V2__rule_definition_composite_pk.sql
 3. 如果使用 H2 内存库，重启后会自动重建表结构。
 4. 如果使用 H2 file 或 MySQL，确认 Flyway 已执行 V2 迁移。
 
-### 9.4 上传单个 sheet 失败
+### 10.4 上传单个 sheet 失败
 
 当前 MVP 以赛题5完整 Excel 为输入，不支持只上传单个业务 sheet。页面上的 `t_order`、`t_payment` 等选择项用于筛选校验结果，不表示导入文件只能包含该表。
 
-### 9.5 H2 数据重启后丢失
+### 10.5 H2 数据重启后丢失
 
 默认 H2 使用内存模式：
 
@@ -590,7 +882,7 @@ jdbc:h2:mem:data-validator
 
 这是预期行为，适合现场快速演示。如果需要保留数据，可后续切换为 H2 file 模式或 MySQL profile。
 
-### 9.6 Maven 或 npm 下载依赖失败
+### 10.6 Maven 或 npm 下载依赖失败
 
 检查新电脑是否能访问 Maven Central 和 npm registry。必要时配置公司内网代理或镜像源。
 
@@ -607,7 +899,7 @@ Maven 可在用户目录配置：
 ~/.m2/settings.xml
 ```
 
-### 9.7 启用 AI 后仍显示本地降级
+### 10.7 启用 AI 后仍显示本地降级
 
 现象：
 
@@ -631,7 +923,7 @@ LOCAL_RULE_BASED · 本地降级
 3. 后端重启时重新传入 AI 环境变量。
 4. 查看后端日志，确认是否发生模型请求超时或返回解析失败。
 
-### 9.8 AI 接口地址如何填写
+### 10.8 AI 接口地址如何填写
 
 `LOCAL_AI_ENDPOINT` 支持基础地址和完整地址两种写法：
 
@@ -646,7 +938,39 @@ http://127.0.0.1:8317/v1/chat/completions
 http://127.0.0.1:8317/v1/chat/completions/v1/chat/completions
 ```
 
-## 10. 演示检查清单
+### 10.9 CLI 提示找不到 Jar
+
+现象：
+
+```text
+data-validator jar not found
+```
+
+处理方式：
+
+1. 先执行 `cd backend && mvn package -DskipTests`。
+2. 确认存在 `backend/target/data-validator-0.1.0.jar`。
+3. 如果 Jar 放在自定义目录，设置 `DATA_VALIDATOR_JAR` 后再执行 `bin/data-validator`。
+
+### 10.10 CLI 返回退出码 2
+
+退出码 `2` 表示 CLI 执行成功，但校验结果命中了配置中的失败阈值。最小样例中存在 1 条 `CRITICAL` 异常，因此返回 `2` 是预期结果。
+
+如果只想确认配置和文件路径是否正确，可先执行：
+
+```bash
+bin/data-validator lint --config examples/distribution-minimal/validator.yml
+```
+
+### 10.11 Windows 无法直接执行 bin/data-validator
+
+`bin/data-validator` 是 sh 脚本，适用于 macOS、Linux、Git Bash 或 WSL。Windows PowerShell 可直接使用 Jar：
+
+```powershell
+java -jar backend/target/data-validator-0.1.0.jar run --config examples/distribution-minimal/validator.yml
+```
+
+## 11. 演示检查清单
 
 演示前建议按以下顺序检查：
 
@@ -666,8 +990,16 @@ http://127.0.0.1:8317/v1/chat/completions/v1/chat/completions
 14. 点击 `AI 分析` 能显示模型生成或本地降级结果。
 15. 点击 `只读校验 SQL` 和 `人工核查 SQL` 能显示 SQL 草案。
 16. 点击 `导出报告` 能生成报告。
+17. 如需演示 CLI，确认 `bin/data-validator --version` 可输出版本号。
+18. `bin/data-validator lint --config examples/distribution-minimal/validator.yml` 返回成功。
+19. `bin/data-validator run --config examples/distribution-minimal/validator.yml` 能输出校验摘要。
+20. 最小样例返回退出码 `2` 时，能说明这是命中 `CRITICAL` 异常导致的质量门禁结果。
+21. `bin/data-validator init jdbc --template order-fulfillment --output <空目录>` 能生成 JDBC 样板。
+22. 生成样板执行 `lint --config <目录>/validator.yml` 返回成功。
+23. `examples/generic-jdbc/rule-snippets.yml` 可通过 `lint --rules ... --metadata ...` 校验。
+24. `recommend --candidate-rules ... --debug-ai ...` 能生成推荐 JSON、候选规则包和 AI 调试文件。
 
-## 11. 推荐演示话术
+## 12. 推荐演示话术
 
 可以按下面顺序介绍系统能力：
 
@@ -676,4 +1008,6 @@ http://127.0.0.1:8317/v1/chat/completions/v1/chat/completions
 3. 校验逻辑围绕 R001 到 R030 业务规则执行，覆盖字段约束、单表业务规则、跨表关联和指标一致性。
 4. 前端提供上传、校验、异常筛选、异常详情和报告导出页面。
 5. 异常详情中包含命中规则、实际值、期望值、原因、影响、建议和证据链，形成“发现异常到定位修复”的闭环。
-6. 当前版本默认使用 H2，后续可通过 profile 切换 MySQL，并扩展数据库表输入和 SQL 查询结果输入。
+6. CLI 模式支持 `init jdbc`、`lint`、`run`、`validate` 和 `recommend`，可用于脚本化校验、分发包演示和 CI 质量门禁。
+7. 新增 JDBC 样板、lint 修复建议、规则片段库和 AI 推荐补充入口，让使用者可以先生成样板、再复制片段、最后用推荐能力补齐复杂规则。
+8. 当前版本默认使用 H2，后续可通过 profile 切换 MySQL，并扩展数据库表输入和 SQL 查询结果输入。

@@ -1,0 +1,19 @@
+schemaVersion: 1
+
+rules:
+  - ruleId: C900
+    ruleName: receivable amount consistency
+    category: SINGLE_BUSINESS_RULE
+    severity: CRITICAL
+    description: receivable_amount == contract_amount - discount_amount.
+    applicableTables: [contract_bill]
+    templateCode: ROW_EXPRESSION
+    templateParams:
+      tableName: contract_bill
+      conditions:
+        - left: { field: receivable_amount }
+          operator: "=="
+          right:
+            op: "-"
+            left: { field: contract_amount }
+            right: { field: discount_amount }
