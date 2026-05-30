@@ -801,7 +801,7 @@ tbody tr.active {
   border-radius: 8px;
   padding: 14px 16px;
   display: grid;
-  grid-template-columns: 120px 120px 1fr;
+  grid-template-columns: 1fr 1fr 130px;
   gap: 12px;
   align-items: center;
 }
